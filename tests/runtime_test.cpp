@@ -1,0 +1,197 @@
+#include <fx/math.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <iostream>
+#include <optional>
+#include <string>
+#include <vector>
+
+using fx::operator""_math;
+
+namespace
+{
+
+bool approx_equal(double left, double right, double epsilon = 1.0e-9)
+{
+    return std::fabs(left - right) <= epsilon;
+}
+
+bool contains_name(const std::vector<std::string>& values, const std::string& name)
+{
+    return std::find(values.begin(), values.end(), name) != values.end();
+}
+
+void require(bool condition, const char* message)
+{
+    if (!condition)
+    {
+        throw std::runtime_error(message);
+    }
+}
+
+} // namespace
+
+int main()
+{
+    try
+    {
+        fx::Calculator calculator;
+
+        const fx::MathValue int_sum = calculator.evaluate("1 + 2");
+        require(int_sum.is<int>(), "1 + 2 should stay int");
+        require(int_sum.get<int>() == 3, "1 + 2 should equal 3");
+
+        const fx::MathValue double_sum = calculator.evaluate("1.0 + 2");
+        require(double_sum.is<double>(), "1.0 + 2 should deduce double");
+        require(approx_equal(double_sum.get<double>(), 3.0), "1.0 + 2 should equal 3.0");
+
+        const fx::MathValue float_sum = calculator.evaluate("1f + 3");
+        require(float_sum.is<float>(), "1f + 3 should deduce float");
+        require(approx_equal(float_sum.get<float>(), 4.0f), "1f + 3 should equal 4f");
+
+        const fx::MathValue long_sum = calculator.evaluate("1l + 2l");
+        require(long_sum.is<long>(), "1l + 2l should deduce long");
+        require(long_sum.get<long>() == 3L, "1l + 2l should equal 3l");
+
+        const fx::MathValue unsigned_long_sum = calculator.evaluate("1ul + 2ul");
+        require(unsigned_long_sum.is<unsigned long>(), "1ul + 2ul should deduce unsigned long");
+        require(unsigned_long_sum.get<unsigned long>() == 3UL, "1ul + 2ul should equal 3ul");
+
+        const fx::MathValue uint8_literal = calculator.evaluate("255u8");
+        require(uint8_literal.is<unsigned short>(), "255u8 should normalize to unsigned short storage");
+        require(uint8_literal.get<unsigned short>() == static_cast<unsigned short>(255), "255u8 should preserve value");
+
+        const fx::MathValue int16_literal = calculator.evaluate("42i16");
+        require(int16_literal.is<std::int16_t>(), "42i16 should deduce int16_t");
+        require(int16_literal.get<std::int16_t>() == static_cast<std::int16_t>(42), "42i16 should preserve int16_t");
+
+        const fx::MathValue size_literal = calculator.evaluate("7uz");
+        require(size_literal.is<std::size_t>(), "7uz should deduce size_t");
+        require(size_literal.get<std::size_t>() == static_cast<std::size_t>(7), "7uz should preserve size_t");
+
+        const fx::MathValue literal_udl = "3 + 2"_math;
+        require(literal_udl.is<int>(), "\"3 + 2\"_math should evaluate");
+        require(literal_udl.get<int>() == 5, "\"3 + 2\"_math should equal 5");
+
+        const fx::MathValue prefixed = calculator.evaluate("0x10 + 0b10");
+        require(prefixed == 18, "hex and binary literals should parse");
+        require(calculator.evaluate("3 > 2").get<int>() == 1, "comparison operators should evaluate");
+        require(calculator.evaluate("3 < 2").get<int>() == 0, "comparison operators should return false as 0");
+        require(calculator.evaluate("1 && 0").get<int>() == 0, "logical and should evaluate");
+        require(calculator.evaluate("1 || 0").get<int>() == 1, "logical or should evaluate");
+        require(calculator.evaluate("!0").get<int>() == 1, "prefix logical not should evaluate");
+        require(calculator.evaluate("1 ? 4 : 9").get<int>() == 4, "ternary should pick true branch");
+        require(calculator.evaluate("0 ? 4 : 9").get<int>() == 9, "ternary should pick false branch");
+        require((fx::MathValue(1) + fx::MathValue(2)).is<int>(), "MathValue operator+ should preserve int");
+        require((fx::MathValue(1) + fx::MathValue(2)) == 3, "MathValue operator+ should work");
+        require((fx::MathValue(5) % fx::MathValue(2)) == 1, "MathValue operator% should work");
+        require(fx::MathValue(5) > fx::MathValue(2), "MathValue comparisons should work");
+
+        std::ostringstream stream;
+        stream << fx::MathValue(4.0f);
+        require(stream.str() == "4f", "MathValue stream output should be available");
+
+        calculator.set_value("a", 2);
+        calculator.set_value("b", 3U);
+        calculator.set_value("s", static_cast<short>(4));
+        const fx::MathValue variables = calculator.evaluate("{a} + {b}");
+        require(variables.is<unsigned int>(), "mixed int and unsigned should select unsigned overload");
+        require(variables.get<unsigned int>() == 5U, "variable expression should evaluate");
+        const fx::MathValue short_variables = calculator.evaluate("{s} + {s}");
+        require(short_variables.is<int>(), "short operands should be supported and promote to int");
+        require(short_variables.get<int>() == 8, "short variable expression should evaluate");
+
+        const auto parse_error = calculator.try_evaluate("1 + )");
+        require(!parse_error.has_value(), "try_evaluate should expose parse failures");
+        require(parse_error.error().kind() == fx::ErrorKind::Parse, "parse failure should be classified");
+        require(parse_error.error().span().begin == 4, "parse failure should include span");
+
+        const auto missing_variable = calculator.try_evaluate("{missing} + 1");
+        require(!missing_variable.has_value(), "try_evaluate should expose evaluation failures");
+        require(missing_variable.error().kind() == fx::ErrorKind::NameResolution, "missing variable should be classified");
+        require(missing_variable.error().token() == "missing", "missing variable should report token");
+
+        fx::Calculator snapshot_source;
+        snapshot_source.set_value("frozen_value", 11);
+        const auto frozen = snapshot_source.snapshot();
+        snapshot_source.set_value("frozen_value", 99);
+        require(fx::evaluate("{frozen_value}", frozen).get<int>() == 11, "snapshot should preserve visible values");
+
+        const auto function_names = calculator.context().function_names();
+        require(contains_name(function_names, "sin"), "introspection should list builtin functions");
+        const auto plus_info = calculator.context().inspect_infix_operator("+");
+        require(plus_info.has_value(), "introspection should inspect infix operators");
+        require(plus_info->precedence == fx::Precedence::Additive, "introspection should expose precedence");
+
+        const fx::MathContext built_context = fx::MathContext::with_builtins()
+                                                  .with_value("builder_value", 12)
+                                                  .with_infix_operator("join", [](int left, int right) { return left + right; }, fx::Precedence::Additive);
+        require(fx::evaluate("{builder_value}", built_context).get<int>() == 12, "with_value should build immutable copies");
+        require(fx::evaluate("1 join 2", built_context).get<int>() == 3, "with_infix_operator should build immutable copies");
+
+        const fx::Operation cached = calculator.create_operation("{a} * 4");
+        require(calculator.evaluate(cached) == 8, "cached operation should use current variable values");
+        calculator.set_value("a", 5);
+        require(calculator.evaluate(cached) == 20, "cached operation should be reusable");
+
+        calculator.add_infix_operator(
+            "avg", [](double left, double right) { return (left + right) / 2.0; }, fx::Precedence::Additive, fx::Associativity::Left);
+        require(approx_equal(calculator.evaluate("8 avg 4").get<double>(), 6.0), "custom infix operator should evaluate");
+
+        calculator.add_function("cos", [](double) { return 42.0; });
+        require(approx_equal(calculator.evaluate("cos(1.5)").get<double>(), 42.0), "custom function should override builtin");
+
+        fx::Calculator alias_calculator;
+        alias_calculator.register_variable("x", 5);
+        alias_calculator.register_function("id", [](int value) { return value; });
+        alias_calculator.register_infix_operator(
+            "sum", [](int left, int right) { return left + right; }, fx::Precedence::Additive, fx::Associativity::Left);
+        require(alias_calculator.evaluate("id({x})").get<int>() == 5, "register_function should forward to function registration");
+        require(alias_calculator.evaluate("1 sum 2").get<int>() == 3, "register_infix_operator should forward to operator registration");
+
+        calculator.add_infix_operator_for<int, float, double>(
+            "mean", [](auto left, auto right) { return (left + right) / static_cast<decltype(left)>(2); },
+            fx::Precedence::Additive, fx::Associativity::Left);
+        require(calculator.evaluate("6 mean 2").get<int>() == 4, "multi-type infix helper should register int overload");
+        require(approx_equal(calculator.evaluate("5.0 mean 3.0").get<double>(), 4.0), "multi-type infix helper should register double overload");
+
+        calculator.add_literal_parser("", "kg", [](std::string_view token) -> std::optional<fx::MathValue> {
+            const std::string body(token.substr(0, token.size() - 2));
+            return fx::MathValue(static_cast<long long>(std::stoll(body) * 1000LL));
+        });
+        require(calculator.evaluate("2kg + 500").get<long long>() == 2500LL, "custom literal suffix should parse");
+
+        const fx::MathValue factorial = calculator.evaluate("5!");
+        require(factorial.is<int>(), "factorial should preserve int result for int input");
+        require(factorial.get<int>() == 120, "factorial should evaluate");
+
+        fx::MathExpr expression("{x} + {PI}");
+        expression.substitute("x", 2);
+        const auto expression_result = expression.try_eval();
+        require(expression_result.has_value(), "MathExpr::try_eval should succeed for valid expressions");
+        require(expression_result.value().get<double>() > 5.0, "MathExpr::try_eval should return a value");
+        const std::vector<std::string> names = expression.variables();
+        require(contains_name(names, "x"), "variables() should include local variable");
+        require(contains_name(names, "PI"), "variables() should include inherited variable");
+        const std::vector<std::string> local_names = expression.local_variables();
+        require(contains_name(local_names, "x"), "local_variables() should include substituted variable");
+
+        const auto compiled = fx::MathExpr("{value} + 2").compile<double>("value");
+        const fx::MathValue compiled_result = compiled(5.0);
+        require(compiled_result.is<double>(), "compiled callable should preserve result type");
+        require(approx_equal(compiled_result.get<double>(), 7.0), "compiled callable should evaluate");
+
+        fx::SMath::set_value("global_counter", 9);
+        require(fx::SMath::evaluate("{global_counter} + 1") == 10, "SMath should expose global evaluation");
+        require(fx::evaluate("1 + 2").is<int>(), "free evaluate should work for string literals");
+
+        std::cout << "runtime tests passed\n";
+        return 0;
+    }
+    catch (const std::exception& error)
+    {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}

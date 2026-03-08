@@ -1,0 +1,612 @@
+#pragma once
+
+#include <cmath>
+#include <ostream>
+
+#include <string_math/detail/base.hpp>
+#include <string_math/policy.hpp>
+#include <string_math/result.hpp>
+#include <string_math/traits.hpp>
+
+namespace string_math
+{
+
+class MathValue
+{
+public:
+    using storage_type = std::variant<STRING_MATH_ALL_VALUE_TYPES>;
+
+    constexpr MathValue() : m_value(0) {}
+
+    template <class T, std::enable_if_t<has_value_traits_v<T>, int> = 0>
+    constexpr MathValue(T value) : m_value(ValueTraits<detail::remove_cvref_t<T>>::to_storage(value))
+    {}
+
+    constexpr ValueType type() const noexcept
+    {
+        return static_cast<ValueType>(m_value.index());
+    }
+
+    template <class T>
+    constexpr bool is() const noexcept
+    {
+        static_assert(has_value_traits_v<T> || detail::is_supported_value_type_v<T>, "unsupported value type");
+        using storage_t = std::conditional_t<
+            has_value_traits_v<T>,
+            typename ValueTraits<detail::remove_cvref_t<T>>::value_type,
+            detail::canonical_storage_type_t<T>>;
+        return std::holds_alternative<storage_t>(m_value);
+    }
+
+    template <class T>
+    constexpr T get() const
+    {
+        static_assert(detail::is_supported_value_type_v<T>, "unsupported value type");
+        return cast<T>();
+    }
+
+    template <class T>
+    constexpr T cast() const
+    {
+        static_assert(has_value_traits_v<T> || detail::is_supported_value_type_v<T>, "unsupported value type");
+        return std::visit(
+            [](const auto& value) -> T {
+                if constexpr (has_value_traits_v<T>)
+                {
+                    using storage_t = typename ValueTraits<detail::remove_cvref_t<T>>::value_type;
+                    return ValueTraits<detail::remove_cvref_t<T>>::from_storage(static_cast<storage_t>(value));
+                }
+                else
+                {
+                    return static_cast<T>(value);
+                }
+            },
+            m_value);
+    }
+
+    constexpr double to_double() const
+    {
+        return cast<double>();
+    }
+
+    std::string to_string() const
+    {
+        return std::visit(
+            [](const auto& value) {
+                using value_t = std::decay_t<decltype(value)>;
+                std::ostringstream stream;
+                if constexpr (std::is_same_v<value_t, float>)
+                {
+                    stream << value << 'f';
+                }
+                else if constexpr (std::is_same_v<value_t, unsigned int>)
+                {
+                    stream << value << 'u';
+                }
+                else if constexpr (std::is_same_v<value_t, long>)
+                {
+                    stream << value << 'l';
+                }
+                else if constexpr (std::is_same_v<value_t, unsigned long>)
+                {
+                    stream << value << "ul";
+                }
+                else if constexpr (std::is_same_v<value_t, long long>)
+                {
+                    stream << value << "ll";
+                }
+                else if constexpr (std::is_same_v<value_t, unsigned long long>)
+                {
+                    stream << value << "ull";
+                }
+                else if constexpr (std::is_same_v<value_t, long double>)
+                {
+                    stream << value << 'L';
+                }
+                else
+                {
+                    stream << value;
+                }
+                return stream.str();
+            },
+            m_value);
+    }
+
+    template <class Visitor>
+    constexpr decltype(auto) visit(Visitor&& visitor) const
+    {
+        return std::visit(std::forward<Visitor>(visitor), m_value);
+    }
+
+private:
+    storage_type m_value;
+};
+
+inline std::string to_string(const MathValue& value)
+{
+    return value.to_string();
+}
+
+template <class T>
+inline T cast_value(const MathValue& value, NarrowingPolicy policy = NarrowingPolicy::Allow)
+{
+    const T converted = value.template cast<T>();
+    if (policy == NarrowingPolicy::Allow)
+    {
+        return converted;
+    }
+
+    if constexpr (std::is_integral_v<T>)
+    {
+        const long double as_long_double = value.visit([](const auto& current) { return static_cast<long double>(current); });
+        if (as_long_double < static_cast<long double>(std::numeric_limits<T>::lowest()) ||
+            as_long_double > static_cast<long double>(std::numeric_limits<T>::max()))
+        {
+            throw std::out_of_range("string_math: narrowing conversion out of range");
+        }
+        if (static_cast<long double>(converted) != as_long_double)
+        {
+            throw std::out_of_range("string_math: narrowing conversion loses precision");
+        }
+    }
+    else if constexpr (std::is_floating_point_v<T>)
+    {
+        const long double as_long_double = value.visit([](const auto& current) { return static_cast<long double>(current); });
+        if (!std::isfinite(static_cast<double>(converted)) && std::isfinite(static_cast<double>(as_long_double)))
+        {
+            throw std::out_of_range("string_math: narrowing conversion out of range");
+        }
+    }
+
+    return converted;
+}
+
+namespace detail
+{
+
+template <class T>
+constexpr bool add_overflow(T left, T right, T& output)
+{
+    if constexpr (std::is_unsigned_v<T>)
+    {
+        output = static_cast<T>(left + right);
+        return output < left;
+    }
+    else
+    {
+        if ((right > 0 && left > std::numeric_limits<T>::max() - right) ||
+            (right < 0 && left < std::numeric_limits<T>::lowest() - right))
+        {
+            return true;
+        }
+        output = static_cast<T>(left + right);
+        return false;
+    }
+}
+
+template <class T>
+constexpr bool sub_overflow(T left, T right, T& output)
+{
+    if constexpr (std::is_unsigned_v<T>)
+    {
+        output = static_cast<T>(left - right);
+        return left < right;
+    }
+    else
+    {
+        if ((right < 0 && left > std::numeric_limits<T>::max() + right) ||
+            (right > 0 && left < std::numeric_limits<T>::lowest() + right))
+        {
+            return true;
+        }
+        output = static_cast<T>(left - right);
+        return false;
+    }
+}
+
+template <class T>
+inline bool mul_overflow(T left, T right, T& output)
+{
+    const long double product = static_cast<long double>(left) * static_cast<long double>(right);
+    if (product < static_cast<long double>(std::numeric_limits<T>::lowest()) ||
+        product > static_cast<long double>(std::numeric_limits<T>::max()))
+    {
+        return true;
+    }
+    output = static_cast<T>(left * right);
+    return false;
+}
+
+template <class T>
+constexpr T saturate_cast(long double value)
+{
+    if (value < static_cast<long double>(std::numeric_limits<T>::lowest()))
+    {
+        return std::numeric_limits<T>::lowest();
+    }
+    if (value > static_cast<long double>(std::numeric_limits<T>::max()))
+    {
+        return std::numeric_limits<T>::max();
+    }
+    return static_cast<T>(value);
+}
+
+template <class Operator>
+constexpr MathValue apply_binary_value_operation(const MathValue& left, const MathValue& right, Operator op)
+{
+    const ValueType target = preferred_binary_target(left.type(), right.type());
+    switch (target)
+    {
+    case ValueType::Short: return MathValue(op(left.cast<short>(), right.cast<short>()));
+    case ValueType::UnsignedShort: return MathValue(op(left.cast<unsigned short>(), right.cast<unsigned short>()));
+    case ValueType::Int: return MathValue(op(left.cast<int>(), right.cast<int>()));
+    case ValueType::UnsignedInt: return MathValue(op(left.cast<unsigned int>(), right.cast<unsigned int>()));
+    case ValueType::Long: return MathValue(op(left.cast<long>(), right.cast<long>()));
+    case ValueType::UnsignedLong: return MathValue(op(left.cast<unsigned long>(), right.cast<unsigned long>()));
+    case ValueType::LongLong: return MathValue(op(left.cast<long long>(), right.cast<long long>()));
+    case ValueType::UnsignedLongLong:
+        return MathValue(op(left.cast<unsigned long long>(), right.cast<unsigned long long>()));
+    case ValueType::Float: return MathValue(op(left.cast<float>(), right.cast<float>()));
+    case ValueType::Double: return MathValue(op(left.cast<double>(), right.cast<double>()));
+    case ValueType::LongDouble: return MathValue(op(left.cast<long double>(), right.cast<long double>()));
+    }
+
+    throw std::logic_error("string_math: unsupported math value type");
+}
+
+template <class Compare>
+constexpr bool apply_compare_value_operation(const MathValue& left, const MathValue& right, Compare compare)
+{
+    return left.visit([&](const auto& lhs) {
+        return right.visit([&](const auto& rhs) {
+            using compare_t = std::common_type_t<decltype(lhs), decltype(rhs)>;
+            return compare(static_cast<compare_t>(lhs), static_cast<compare_t>(rhs));
+        });
+    });
+}
+
+} // namespace detail
+
+namespace detail
+{
+
+inline bool truthy(const MathValue& value)
+{
+    return value.visit([](const auto& current) { return current != 0; });
+}
+
+template <class T, class Operation>
+inline Result<MathValue> apply_integral_policy(T left, T right, OverflowPolicy policy, Operation operation, const char* symbol)
+{
+    T result{};
+    bool overflow = false;
+
+    if (std::string_view(symbol) == "+")
+    {
+        overflow = add_overflow(left, right, result);
+    }
+    else if (std::string_view(symbol) == "-")
+    {
+        overflow = sub_overflow(left, right, result);
+    }
+    else if (std::string_view(symbol) == "*")
+    {
+        overflow = mul_overflow(left, right, result);
+    }
+    else
+    {
+        result = operation(left, right);
+    }
+
+    if (!overflow || policy == OverflowPolicy::Wrap)
+    {
+        return MathValue(result);
+    }
+
+    if (policy == OverflowPolicy::Checked)
+    {
+        return Error(ErrorKind::Evaluation, "string_math: arithmetic overflow", {}, symbol);
+    }
+
+    if (policy == OverflowPolicy::Saturate)
+    {
+        const long double computed = operation(static_cast<long double>(left), static_cast<long double>(right));
+        return MathValue(saturate_cast<T>(computed));
+    }
+
+    const long double promoted = operation(static_cast<long double>(left), static_cast<long double>(right));
+    return MathValue(promoted);
+}
+
+inline Result<MathValue> apply_builtin_infix(
+    std::string_view symbol,
+    const MathValue& left,
+    const MathValue& right,
+    const EvaluationPolicy& policy)
+{
+    if (symbol == "==" || symbol == "!=" || symbol == "<" || symbol == "<=" || symbol == ">" || symbol == ">=")
+    {
+        if (symbol == "==")
+        {
+            return MathValue(apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs == rhs; }) ? 1 : 0);
+        }
+        if (symbol == "!=")
+        {
+            return MathValue(apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs != rhs; }) ? 1 : 0);
+        }
+        if (symbol == "<")
+        {
+            return MathValue(apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs < rhs; }) ? 1 : 0);
+        }
+        if (symbol == "<=")
+        {
+            return MathValue(apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs <= rhs; }) ? 1 : 0);
+        }
+        if (symbol == ">")
+        {
+            return MathValue(apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs > rhs; }) ? 1 : 0);
+        }
+        return MathValue(apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs >= rhs; }) ? 1 : 0);
+    }
+
+    if (symbol == "&&")
+    {
+        return MathValue(truthy(left) && truthy(right) ? 1 : 0);
+    }
+    if (symbol == "||")
+    {
+        return MathValue(truthy(left) || truthy(right) ? 1 : 0);
+    }
+
+    const auto apply_integral_symbol = [&](auto lhs, auto rhs) -> Result<MathValue> {
+        using value_t = std::decay_t<decltype(lhs)>;
+        if (symbol == "+") return apply_integral_policy<value_t>(lhs, rhs, policy.overflow, [](auto a, auto b) { return a + b; }, "+");
+        if (symbol == "-") return apply_integral_policy<value_t>(lhs, rhs, policy.overflow, [](auto a, auto b) { return a - b; }, "-");
+        if (symbol == "*") return apply_integral_policy<value_t>(lhs, rhs, policy.overflow, [](auto a, auto b) { return a * b; }, "*");
+        if (symbol == "/") return MathValue(lhs / rhs);
+        if (symbol == "%") return MathValue(lhs % rhs);
+        if (symbol == "max") return MathValue(lhs > rhs ? lhs : rhs);
+        if (symbol == "min") return MathValue(lhs < rhs ? lhs : rhs);
+        return Error(ErrorKind::Evaluation, "string_math: unsupported builtin operator", {}, std::string(symbol));
+    };
+
+    const ValueType target = preferred_binary_target(left.type(), right.type(), policy.promotion);
+    switch (target)
+    {
+    case ValueType::Short: return apply_integral_symbol(left.cast<short>(), right.cast<short>());
+    case ValueType::UnsignedShort: return apply_integral_symbol(left.cast<unsigned short>(), right.cast<unsigned short>());
+    case ValueType::Int: return apply_integral_symbol(left.cast<int>(), right.cast<int>());
+    case ValueType::UnsignedInt: return apply_integral_symbol(left.cast<unsigned int>(), right.cast<unsigned int>());
+    case ValueType::Long: return apply_integral_symbol(left.cast<long>(), right.cast<long>());
+    case ValueType::UnsignedLong: return apply_integral_symbol(left.cast<unsigned long>(), right.cast<unsigned long>());
+    case ValueType::LongLong: return apply_integral_symbol(left.cast<long long>(), right.cast<long long>());
+    case ValueType::UnsignedLongLong: return apply_integral_symbol(left.cast<unsigned long long>(), right.cast<unsigned long long>());
+    case ValueType::Float:
+        if (symbol == "+") return MathValue(left.cast<float>() + right.cast<float>());
+        if (symbol == "-") return MathValue(left.cast<float>() - right.cast<float>());
+        if (symbol == "*") return MathValue(left.cast<float>() * right.cast<float>());
+        if (symbol == "/") return MathValue(left.cast<float>() / right.cast<float>());
+        if (symbol == "%") return MathValue(std::fmod(left.cast<float>(), right.cast<float>()));
+        if (symbol == "max") return MathValue(std::max(left.cast<float>(), right.cast<float>()));
+        if (symbol == "min") return MathValue(std::min(left.cast<float>(), right.cast<float>()));
+        break;
+    case ValueType::Double:
+        if (symbol == "+") return MathValue(left.cast<double>() + right.cast<double>());
+        if (symbol == "-") return MathValue(left.cast<double>() - right.cast<double>());
+        if (symbol == "*") return MathValue(left.cast<double>() * right.cast<double>());
+        if (symbol == "/") return MathValue(left.cast<double>() / right.cast<double>());
+        if (symbol == "%") return MathValue(std::fmod(left.cast<double>(), right.cast<double>()));
+        if (symbol == "max") return MathValue(std::max(left.cast<double>(), right.cast<double>()));
+        if (symbol == "min") return MathValue(std::min(left.cast<double>(), right.cast<double>()));
+        break;
+    case ValueType::LongDouble:
+        if (symbol == "+") return MathValue(left.cast<long double>() + right.cast<long double>());
+        if (symbol == "-") return MathValue(left.cast<long double>() - right.cast<long double>());
+        if (symbol == "*") return MathValue(left.cast<long double>() * right.cast<long double>());
+        if (symbol == "/") return MathValue(left.cast<long double>() / right.cast<long double>());
+        if (symbol == "%") return MathValue(std::fmod(left.cast<long double>(), right.cast<long double>()));
+        if (symbol == "max") return MathValue(std::max(left.cast<long double>(), right.cast<long double>()));
+        if (symbol == "min") return MathValue(std::min(left.cast<long double>(), right.cast<long double>()));
+        break;
+    }
+
+    if (symbol == "^") return MathValue(std::pow(left.to_double(), right.to_double()));
+    if (symbol == "log") return MathValue(std::log(right.to_double()) / std::log(left.to_double()));
+    return Error(ErrorKind::Evaluation, "string_math: unsupported builtin operator", {}, std::string(symbol));
+}
+
+} // namespace detail
+
+constexpr bool operator==(const MathValue& left, const MathValue& right)
+{
+    return detail::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs == rhs; });
+}
+
+constexpr bool operator!=(const MathValue& left, const MathValue& right)
+{
+    return !(left == right);
+}
+
+constexpr bool operator<(const MathValue& left, const MathValue& right)
+{
+    return detail::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs < rhs; });
+}
+
+constexpr bool operator<=(const MathValue& left, const MathValue& right)
+{
+    return detail::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs <= rhs; });
+}
+
+constexpr bool operator>(const MathValue& left, const MathValue& right)
+{
+    return detail::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs > rhs; });
+}
+
+constexpr bool operator>=(const MathValue& left, const MathValue& right)
+{
+    return detail::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs >= rhs; });
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr bool operator==(const MathValue& left, T right)
+{
+    return left.visit([&](const auto& lhs) {
+        using compare_t = std::common_type_t<decltype(lhs), T>;
+        return static_cast<compare_t>(lhs) == static_cast<compare_t>(right);
+    });
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr bool operator==(T left, const MathValue& right)
+{
+    return right == left;
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr bool operator!=(const MathValue& left, T right)
+{
+    return !(left == right);
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr bool operator!=(T left, const MathValue& right)
+{
+    return !(left == right);
+}
+
+constexpr MathValue operator+(const MathValue& left, const MathValue& right)
+{
+    return detail::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs + rhs; });
+}
+
+constexpr MathValue operator+(const MathValue& value)
+{
+    return value;
+}
+
+constexpr MathValue operator-(const MathValue& left, const MathValue& right)
+{
+    return detail::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs - rhs; });
+}
+
+constexpr MathValue operator-(const MathValue& value)
+{
+    return value.visit([](const auto& current) { return MathValue(-current); });
+}
+
+constexpr MathValue operator*(const MathValue& left, const MathValue& right)
+{
+    return detail::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs * rhs; });
+}
+
+constexpr MathValue operator/(const MathValue& left, const MathValue& right)
+{
+    return detail::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) {
+        if (rhs == 0)
+        {
+            throw std::domain_error("string_math: division by zero");
+        }
+        return lhs / rhs;
+    });
+}
+
+constexpr MathValue operator%(const MathValue& left, const MathValue& right)
+{
+    const ValueType target = detail::preferred_binary_target(left.type(), right.type());
+    if (detail::is_integral(target))
+    {
+        return detail::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) {
+            if (rhs == 0)
+            {
+                throw std::domain_error("string_math: modulo by zero");
+            }
+            using value_t = std::decay_t<decltype(lhs)>;
+            if constexpr (std::is_integral_v<value_t>)
+            {
+                return lhs % rhs;
+            }
+            else
+            {
+                return std::fmod(lhs, rhs);
+            }
+        });
+    }
+
+    switch (target)
+    {
+    case ValueType::Float: return MathValue(std::fmod(left.cast<float>(), right.cast<float>()));
+    case ValueType::Double: return MathValue(std::fmod(left.cast<double>(), right.cast<double>()));
+    case ValueType::LongDouble: return MathValue(std::fmod(left.cast<long double>(), right.cast<long double>()));
+    default: break;
+    }
+
+    throw std::logic_error("string_math: unsupported modulo target");
+}
+
+inline std::ostream& operator<<(std::ostream& stream, const MathValue& value)
+{
+    stream << value.to_string();
+    return stream;
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr MathValue operator+(const MathValue& left, T right)
+{
+    return left + MathValue(right);
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr MathValue operator+(T left, const MathValue& right)
+{
+    return MathValue(left) + right;
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr MathValue operator-(const MathValue& left, T right)
+{
+    return left - MathValue(right);
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr MathValue operator-(T left, const MathValue& right)
+{
+    return MathValue(left) - right;
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr MathValue operator*(const MathValue& left, T right)
+{
+    return left * MathValue(right);
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr MathValue operator*(T left, const MathValue& right)
+{
+    return MathValue(left) * right;
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr MathValue operator/(const MathValue& left, T right)
+{
+    return left / MathValue(right);
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr MathValue operator/(T left, const MathValue& right)
+{
+    return MathValue(left) / right;
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr MathValue operator%(const MathValue& left, T right)
+{
+    return left % MathValue(right);
+}
+
+template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
+constexpr MathValue operator%(T left, const MathValue& right)
+{
+    return MathValue(left) % right;
+}
+
+} // namespace string_math
