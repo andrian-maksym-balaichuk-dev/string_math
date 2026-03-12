@@ -9,5 +9,6 @@
 #include <string_math/policy.hpp>
 #include <string_math/result.hpp>
 #include <string_math/semantics.hpp>
+#include <string_math/smath.hpp>
 #include <string_math/traits.hpp>
 #include <string_math/value.hpp>

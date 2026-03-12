@@ -43,7 +43,7 @@ inline MathValue evaluate(const Operation& operation, const MathContext& context
 }
 
 #if STRING_MATH_HAS_CONSTEXPR_EVALUATION
-inline constexpr auto k_builtin_cx_context = with_builtins(detail::StaticMathContext<>{});
+inline constexpr auto k_builtin_cx_context = with_builtins(MathContext::compile_time());
 
 template <class Context, class = void>
 struct is_constexpr_context : std::false_type

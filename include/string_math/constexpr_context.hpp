@@ -697,19 +697,6 @@ namespace string_math
 
 #if STRING_MATH_HAS_CONSTEXPR_EVALUATION
 template <
-    std::size_t VariableCount = 0,
-    std::size_t InfixCount = 0,
-    std::size_t FunctionCount = 0,
-    std::size_t PrefixCount = 0,
-    std::size_t PostfixCount = 0>
-using ConstexprContext = detail::StaticMathContext<
-    VariableCount,
-    InfixCount,
-    FunctionCount,
-    PrefixCount,
-    PostfixCount>;
-
-template <
     std::size_t VariableCount,
     std::size_t InfixCount,
     std::size_t FunctionCount,
