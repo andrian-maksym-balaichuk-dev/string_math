@@ -99,6 +99,10 @@ struct signature_traits<R(Args...)>
     static constexpr std::size_t arity = sizeof...(Args);
 };
 
+template <class R, class... Args>
+struct signature_traits<R (*)(Args...)> : signature_traits<R(Args...)>
+{};
+
 template <class T>
 struct remove_cvref
 {

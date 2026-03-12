@@ -660,28 +660,60 @@ inline detail::ParsedText detail::Parser::m_parse_literal_token()
 namespace detail
 {
 
-inline bool is_builtin_foldable_prefix(std::string_view symbol)
+inline bool has_foldable_prefix(const MathContext& context, std::string_view symbol)
 {
-    return symbol == "+" || symbol == "-" || symbol == "!" || symbol == "abs" || symbol == "sqrt";
+    if (const auto* entry = context.find_prefix_operator(symbol); entry != nullptr)
+    {
+        return std::any_of(entry->overloads.begin(), entry->overloads.end(), [](const auto& overload) {
+            return overload.semantics.has_flag(CallableFlag::Foldable);
+        });
+    }
+    return false;
 }
 
-inline bool is_builtin_foldable_postfix(std::string_view symbol)
+inline bool has_foldable_postfix(const MathContext& context, std::string_view symbol)
 {
-    return symbol == "!";
+    if (const auto* entry = context.find_postfix_operator(symbol); entry != nullptr)
+    {
+        return std::any_of(entry->overloads.begin(), entry->overloads.end(), [](const auto& overload) {
+            return overload.semantics.has_flag(CallableFlag::Foldable);
+        });
+    }
+    return false;
 }
 
-inline bool is_builtin_foldable_infix(std::string_view symbol)
+inline bool has_foldable_infix(const MathContext& context, std::string_view symbol)
 {
-    return symbol == "+" || symbol == "-" || symbol == "*" || symbol == "/" || symbol == "%" || symbol == "^" ||
-        symbol == "log" || symbol == "max" || symbol == "min" || symbol == "==" || symbol == "!=" || symbol == "<" ||
-        symbol == "<=" || symbol == ">" || symbol == ">=" || symbol == "&&" || symbol == "||";
+    if (const auto* entry = context.find_infix_operator(symbol); entry != nullptr)
+    {
+        return std::any_of(entry->overloads.begin(), entry->overloads.end(), [](const auto& overload) {
+            return overload.semantics.has_flag(CallableFlag::Foldable);
+        });
+    }
+    return false;
 }
 
-inline bool is_builtin_foldable_function(std::string_view name)
+inline bool has_foldable_function(const MathContext& context, std::string_view name, int arity)
 {
-    return name == "sin" || name == "cos" || name == "tan" || name == "asin" || name == "acos" || name == "atan" ||
-        name == "sqrt" || name == "ceil" || name == "floor" || name == "round" || name == "exp" || name == "abs" ||
-        name == "rad" || name == "deg" || name == "max" || name == "min";
+    if (const auto* entry = context.find_function(name); entry != nullptr)
+    {
+        if (arity == 1)
+        {
+            return std::any_of(entry->unary_overloads.begin(), entry->unary_overloads.end(), [](const auto& overload) {
+                return overload.semantics.has_flag(CallableFlag::Foldable);
+            });
+        }
+        if (arity == 2)
+        {
+            return std::any_of(entry->binary_overloads.begin(), entry->binary_overloads.end(), [](const auto& overload) {
+                return overload.semantics.has_flag(CallableFlag::Foldable);
+            });
+        }
+        return std::any_of(entry->variadic_overloads.begin(), entry->variadic_overloads.end(), [&](const auto& overload) {
+            return overload.min_arity <= static_cast<std::size_t>(arity) && overload.semantics.has_flag(CallableFlag::Foldable);
+        });
+    }
+    return false;
 }
 
 inline Operation make_subtree_operation(const Operation& source, const Node& node, std::vector<Node> child_nodes)
@@ -734,19 +766,19 @@ inline int fold_node(
     switch (node.kind)
     {
     case Node::Kind::PrefixOperator:
-        foldable = child_is_literal(node.left) && is_builtin_foldable_prefix(node.text);
+        foldable = child_is_literal(node.left) && has_foldable_prefix(context, node.text);
         break;
     case Node::Kind::PostfixOperator:
-        foldable = child_is_literal(node.left) && is_builtin_foldable_postfix(node.text);
+        foldable = child_is_literal(node.left) && has_foldable_postfix(context, node.text);
         break;
     case Node::Kind::InfixOperator:
-        foldable = child_is_literal(node.left) && child_is_literal(node.right) && is_builtin_foldable_infix(node.text);
+        foldable = child_is_literal(node.left) && child_is_literal(node.right) && has_foldable_infix(context, node.text);
         break;
     case Node::Kind::Conditional:
         foldable = child_is_literal(node.left) && child_is_literal(node.right) && child_is_literal(node.third);
         break;
     case Node::Kind::FunctionCall:
-        foldable = is_builtin_foldable_function(node.text);
+        foldable = has_foldable_function(context, node.text, node.arity);
         for (const int argument : node.arguments)
         {
             foldable = foldable && child_is_literal(argument);
@@ -894,7 +926,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
             try
             {
-                return overload_result.value()->invoke(overload_result.value()->storage.get(), operand_result.value());
+                return detail::invoke_unary_overload(*overload_result.value(), operand_result.value());
             }
             catch (const std::exception& error)
             {
@@ -927,7 +959,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
             try
             {
-                return overload_result.value()->invoke(overload_result.value()->storage.get(), operand_result.value());
+                return detail::invoke_unary_overload(*overload_result.value(), operand_result.value());
             }
             catch (const std::exception& error)
             {
@@ -971,8 +1003,12 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
             try
             {
-                return overload_result.value()
-                    ->invoke(overload_result.value()->storage.get(), left_result.value(), right_result.value());
+                return detail::invoke_binary_overload(
+                    *overload_result.value(),
+                    left_result.value(),
+                    right_result.value(),
+                    context.policy(),
+                    node.text);
             }
             catch (const std::exception& error)
             {
@@ -1008,7 +1044,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
                 try
                 {
-                    return overload_result.value()->invoke(overload_result.value()->storage.get(), argument_result.value());
+                    return detail::invoke_unary_overload(*overload_result.value(), argument_result.value());
                 }
                 catch (const std::exception& error)
                 {
@@ -1043,8 +1079,12 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
                 try
                 {
-                    return overload_result.value()
-                        ->invoke(overload_result.value()->storage.get(), left_result.value(), right_result.value());
+                    return detail::invoke_binary_overload(
+                        *overload_result.value(),
+                        left_result.value(),
+                        right_result.value(),
+                        context.policy(),
+                        node.text);
                 }
                 catch (const std::exception& error)
                 {

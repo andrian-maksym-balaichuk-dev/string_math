@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string_math/detail/builtins.hpp>
 #include <string_math/value.hpp>
 
 namespace string_math::detail
@@ -27,10 +28,13 @@ struct fixed_string
 template <std::size_t N>
 fixed_string(const char (&)[N]) -> fixed_string<N>;
 
+template <class Context = void>
 class ConstexprParser
 {
 public:
-    constexpr explicit ConstexprParser(std::string_view expression) : m_expression(expression) {}
+    constexpr explicit ConstexprParser(std::string_view expression, const Context* context = nullptr)
+        : m_expression(expression), m_context(context)
+    {}
 
     constexpr MathValue parse()
     {
@@ -51,6 +55,12 @@ private:
         Associativity associativity{ Associativity::Left };
     };
 
+    struct MatchedUnaryOperator
+    {
+        std::string_view symbol;
+        int precedence{ 0 };
+    };
+
     constexpr void m_skip_spaces() noexcept
     {
         while (m_position < m_expression.size() && is_space(m_expression[m_position]))
@@ -66,9 +76,17 @@ private:
         for (;;)
         {
             m_skip_spaces();
-            if (m_position >= m_expression.size() || m_expression[m_position] == ')')
+            if (m_position >= m_expression.size() || m_expression[m_position] == ')' || m_expression[m_position] == ',')
             {
                 break;
+            }
+
+            const auto postfix = m_match_postfix();
+            if (!postfix.symbol.empty() && postfix.precedence >= min_precedence)
+            {
+                m_position += postfix.symbol.size();
+                left = m_apply_postfix(postfix.symbol, left);
+                continue;
             }
 
             const auto match = m_match_infix();
@@ -104,73 +122,83 @@ private:
     constexpr MatchedOperator m_match_infix() const noexcept
     {
         const std::string_view tail = m_expression.substr(m_position);
-        if (starts_with(tail, "max"))
+        if constexpr (!std::is_same_v<Context, void>)
         {
-            return { "max", Precedence::Power, Associativity::Left };
+            if (m_context != nullptr)
+            {
+                const std::string_view symbol = m_context->match_infix_symbol(tail);
+                if (!symbol.empty())
+                {
+                    if (const auto* entry = m_context->find_infix_operator(symbol); entry != nullptr)
+                    {
+                        return {entry->symbol, entry->precedence, entry->associativity};
+                    }
+                }
+            }
         }
-        if (starts_with(tail, "min"))
+        const std::string_view symbol = match_builtin_infix_symbol(tail);
+        if (!symbol.empty())
         {
-            return { "min", Precedence::Power, Associativity::Left };
+            if (const auto* entry = find_builtin_infix_operator(symbol); entry != nullptr)
+            {
+                return {entry->symbol, entry->precedence, entry->associativity};
+            }
         }
-        if (starts_with(tail, "log"))
+        return {};
+    }
+
+    constexpr MatchedUnaryOperator m_match_prefix() const noexcept
+    {
+        const std::string_view tail = m_expression.substr(m_position);
+        if constexpr (!std::is_same_v<Context, void>)
         {
-            return { "log", Precedence::Power, Associativity::Left };
+            if (m_context != nullptr)
+            {
+                const std::string_view symbol = m_context->match_prefix_symbol(tail);
+                if (!symbol.empty())
+                {
+                    if (const auto* entry = m_context->find_prefix_operator(symbol); entry != nullptr)
+                    {
+                        return {entry->symbol, entry->precedence};
+                    }
+                }
+            }
         }
-        if (starts_with(tail, "||"))
+        const std::string_view symbol = match_builtin_prefix_symbol(tail);
+        if (!symbol.empty())
         {
-            return { "||", Precedence::LogicalOr, Associativity::Left };
+            if (const auto* entry = find_builtin_prefix_operator(symbol); entry != nullptr)
+            {
+                return {entry->symbol, entry->precedence};
+            }
         }
-        if (starts_with(tail, "&&"))
+        return {};
+    }
+
+    constexpr MatchedUnaryOperator m_match_postfix() const noexcept
+    {
+        const std::string_view tail = m_expression.substr(m_position);
+        if constexpr (!std::is_same_v<Context, void>)
         {
-            return { "&&", Precedence::LogicalAnd, Associativity::Left };
+            if (m_context != nullptr)
+            {
+                const std::string_view symbol = m_context->match_postfix_symbol(tail);
+                if (!symbol.empty())
+                {
+                    if (const auto* entry = m_context->find_postfix_operator(symbol); entry != nullptr)
+                    {
+                        return {entry->symbol, entry->precedence};
+                    }
+                }
+            }
         }
-        if (starts_with(tail, "=="))
+        const std::string_view symbol = match_builtin_postfix_symbol(tail);
+        if (!symbol.empty())
         {
-            return { "==", Precedence::Comparison, Associativity::Left };
-        }
-        if (starts_with(tail, "!="))
-        {
-            return { "!=", Precedence::Comparison, Associativity::Left };
-        }
-        if (starts_with(tail, "<="))
-        {
-            return { "<=", Precedence::Comparison, Associativity::Left };
-        }
-        if (starts_with(tail, ">="))
-        {
-            return { ">=", Precedence::Comparison, Associativity::Left };
-        }
-        if (starts_with(tail, "<"))
-        {
-            return { "<", Precedence::Comparison, Associativity::Left };
-        }
-        if (starts_with(tail, ">"))
-        {
-            return { ">", Precedence::Comparison, Associativity::Left };
-        }
-        if (starts_with(tail, "^"))
-        {
-            return { "^", Precedence::Power, Associativity::Right };
-        }
-        if (starts_with(tail, "*"))
-        {
-            return { "*", Precedence::Multiplicative, Associativity::Left };
-        }
-        if (starts_with(tail, "/"))
-        {
-            return { "/", Precedence::Multiplicative, Associativity::Left };
-        }
-        if (starts_with(tail, "%"))
-        {
-            return { "%", Precedence::Multiplicative, Associativity::Left };
-        }
-        if (starts_with(tail, "+"))
-        {
-            return { "+", Precedence::Additive, Associativity::Left };
-        }
-        if (starts_with(tail, "-"))
-        {
-            return { "-", Precedence::Additive, Associativity::Left };
+            if (const auto* entry = find_builtin_postfix_operator(symbol); entry != nullptr)
+            {
+                return {entry->symbol, entry->precedence};
+            }
         }
         return {};
     }
@@ -183,22 +211,12 @@ private:
             throw std::invalid_argument("string_math: expected expression");
         }
 
-        if (m_expression[m_position] == '+')
+        const auto match = m_match_prefix();
+        if (!match.symbol.empty())
         {
-            ++m_position;
-            return m_parse_expression(Precedence::Prefix);
-        }
-        if (m_expression[m_position] == '-')
-        {
-            ++m_position;
-            const MathValue value = m_parse_expression(Precedence::Prefix);
-            return value.visit([](const auto& current) { return MathValue(-current); });
-        }
-        if (m_expression[m_position] == '!')
-        {
-            ++m_position;
-            const MathValue value = m_parse_expression(Precedence::Prefix);
-            return m_truthy(value) ? MathValue(0) : MathValue(1);
+            m_position += match.symbol.size();
+            const MathValue value = m_parse_expression(match.precedence);
+            return m_apply_prefix(match.symbol, value);
         }
 
         return m_parse_primary();
@@ -225,7 +243,120 @@ private:
             return inner;
         }
 
+        if (m_expression[m_position] == '{')
+        {
+            ++m_position;
+            const std::string_view name = m_parse_variable_name();
+            if constexpr (!std::is_same_v<Context, void>)
+            {
+                if (m_context != nullptr)
+                {
+                    if (const auto value = m_context->find_value(name))
+                    {
+                        return *value;
+                    }
+                }
+            }
+            throw std::invalid_argument("string_math: unknown constexpr variable");
+        }
+
+        if (is_identifier_start(m_expression[m_position]))
+        {
+            const std::string_view identifier = m_parse_identifier();
+            m_skip_spaces();
+            if (m_position < m_expression.size() && m_expression[m_position] == '(')
+            {
+                return m_parse_function_call(identifier);
+            }
+            throw std::invalid_argument("string_math: unknown constexpr identifier");
+        }
+
         return m_parse_constexpr_literal(m_parse_literal());
+    }
+
+    constexpr std::string_view m_parse_identifier()
+    {
+        const std::size_t begin = m_position++;
+        while (m_position < m_expression.size() && is_identifier_char(m_expression[m_position]))
+        {
+            ++m_position;
+        }
+        return m_expression.substr(begin, m_position - begin);
+    }
+
+    constexpr std::string_view m_parse_variable_name()
+    {
+        const std::size_t begin = m_position;
+        while (m_position < m_expression.size() && m_expression[m_position] != '}')
+        {
+            ++m_position;
+        }
+        if (m_position >= m_expression.size())
+        {
+            throw std::invalid_argument("string_math: expected '}'");
+        }
+        std::size_t trimmed_begin = begin;
+        std::size_t trimmed_end = m_position;
+        while (trimmed_begin < trimmed_end && is_space(m_expression[trimmed_begin]))
+        {
+            ++trimmed_begin;
+        }
+        while (trimmed_end > trimmed_begin && is_space(m_expression[trimmed_end - 1]))
+        {
+            --trimmed_end;
+        }
+        const std::string_view name = m_expression.substr(trimmed_begin, trimmed_end - trimmed_begin);
+        ++m_position;
+        return name;
+    }
+
+    constexpr MathValue m_parse_function_call(std::string_view name)
+    {
+        ++m_position;
+        std::array<MathValue, 8> arguments{};
+        std::size_t count = 0;
+        m_skip_spaces();
+        if (m_position < m_expression.size() && m_expression[m_position] != ')')
+        {
+            for (;;)
+            {
+                if (count >= arguments.size())
+                {
+                    throw std::invalid_argument("string_math: too many constexpr function arguments");
+                }
+                arguments[count++] = m_parse_expression(0);
+                m_skip_spaces();
+                if (m_position >= m_expression.size() || m_expression[m_position] != ',')
+                {
+                    break;
+                }
+                ++m_position;
+                m_skip_spaces();
+            }
+        }
+
+        if (m_position >= m_expression.size() || m_expression[m_position] != ')')
+        {
+            throw std::invalid_argument("string_math: expected ')' after constexpr function call");
+        }
+        ++m_position;
+
+        if constexpr (!std::is_same_v<Context, void>)
+        {
+            if (m_context != nullptr)
+            {
+                if (const auto* function = m_context->find_function(name); function != nullptr)
+                {
+                    return function->invoke(arguments.data(), count);
+                }
+            }
+        }
+        if (const auto* function = find_builtin_function(name); function != nullptr)
+        {
+            return function->invoke(arguments.data(), count);
+        }
+
+        throw std::invalid_argument("string_math: unsupported constexpr function");
     }
 
     constexpr std::string_view m_parse_literal()
@@ -489,75 +620,59 @@ private:
 
     constexpr MathValue m_apply_infix(std::string_view symbol, const MathValue& left, const MathValue& right)
     {
-        if (symbol == "+")
+        if constexpr (!std::is_same_v<Context, void>)
         {
-            return left + right;
+            if (m_context != nullptr)
+            {
+                if (const auto* entry = m_context->find_infix_operator(symbol); entry != nullptr)
+                {
+                    return entry->invoke(left, right);
+                }
+            }
         }
-        if (symbol == "-")
+        if (const auto* entry = find_builtin_infix_operator(symbol); entry != nullptr)
         {
-            return left - right;
-        }
-        if (symbol == "*")
-        {
-            return left * right;
-        }
-        if (symbol == "/")
-        {
-            return left / right;
-        }
-        if (symbol == "%")
-        {
-            return left % right;
-        }
-        if (symbol == "^")
-        {
-            return MathValue(std::pow(left.to_double(), right.to_double()));
-        }
-        if (symbol == "max")
-        {
-            return left > right ? left : right;
-        }
-        if (symbol == "min")
-        {
-            return left < right ? left : right;
-        }
-        if (symbol == "log")
-        {
-            return MathValue(std::log(right.to_double()) / std::log(left.to_double()));
-        }
-        if (symbol == "==")
-        {
-            return MathValue(left == right ? 1 : 0);
-        }
-        if (symbol == "!=")
-        {
-            return MathValue(left != right ? 1 : 0);
-        }
-        if (symbol == "<")
-        {
-            return MathValue(left < right ? 1 : 0);
-        }
-        if (symbol == "<=")
-        {
-            return MathValue(left <= right ? 1 : 0);
-        }
-        if (symbol == ">")
-        {
-            return MathValue(left > right ? 1 : 0);
-        }
-        if (symbol == ">=")
-        {
-            return MathValue(left >= right ? 1 : 0);
-        }
-        if (symbol == "&&")
-        {
-            return MathValue(m_truthy(left) && m_truthy(right) ? 1 : 0);
-        }
-        if (symbol == "||")
-        {
-            return MathValue(m_truthy(left) || m_truthy(right) ? 1 : 0);
+            return entry->invoke(left, right);
         }
         throw std::invalid_argument("string_math: unsupported constexpr operator");
+    }
+
+    constexpr MathValue m_apply_prefix(std::string_view symbol, const MathValue& value)
+    {
+        if constexpr (!std::is_same_v<Context, void>)
+        {
+            if (m_context != nullptr)
+            {
+                if (const auto* entry = m_context->find_prefix_operator(symbol); entry != nullptr)
+                {
+                    return entry->invoke(value);
+                }
+            }
+        }
+        if (const auto* entry = find_builtin_prefix_operator(symbol); entry != nullptr)
+        {
+            return entry->invoke(value);
+        }
+        throw std::invalid_argument("string_math: unsupported constexpr prefix operator");
+    }
+
+    constexpr MathValue m_apply_postfix(std::string_view symbol, const MathValue& value)
+    {
+        if constexpr (!std::is_same_v<Context, void>)
+        {
+            if (m_context != nullptr)
+            {
+                if (const auto* entry = m_context->find_postfix_operator(symbol); entry != nullptr)
+                {
+                    return entry->invoke(value);
+                }
+            }
+        }
+        if (const auto* entry = find_builtin_postfix_operator(symbol); entry != nullptr)
+        {
+            return entry->invoke(value);
+        }
+        throw std::invalid_argument("string_math: unsupported constexpr postfix operator");
     }
 
     constexpr bool m_truthy(const MathValue& value) const
@@ -567,6 +682,7 @@ private:
 
     std::string_view m_expression;
     std::size_t m_position{ 0 };
+    const Context* m_context{ nullptr };
 };
 
 } // namespace string_math::detail

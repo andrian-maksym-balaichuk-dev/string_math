@@ -6,6 +6,7 @@
 #include <string_math/detail/overload.hpp>
 #include <string_math/policy.hpp>
 #include <string_math/result.hpp>
+#include <string_math/semantics.hpp>
 #include <string_math/value.hpp>
 
 namespace string_math
@@ -22,6 +23,7 @@ struct UnaryOverloadInfo
 {
     ValueType result_type{};
     ValueType argument_type{};
+    CallableSemantics semantics{};
 };
 
 struct BinaryOverloadInfo
@@ -29,6 +31,7 @@ struct BinaryOverloadInfo
     ValueType result_type{};
     ValueType left_type{};
     ValueType right_type{};
+    CallableSemantics semantics{};
 };
 
 struct FunctionInfo
@@ -37,6 +40,7 @@ struct FunctionInfo
     std::vector<UnaryOverloadInfo> unary_overloads;
     std::vector<BinaryOverloadInfo> binary_overloads;
     std::vector<std::size_t> variadic_min_arities;
+    std::vector<CallableSemantics> variadic_semantics;
 };
 
 struct OperatorInfo
@@ -90,6 +94,7 @@ struct FunctionEntry
     struct VariadicOverload
     {
         std::size_t min_arity{1};
+        CallableSemantics semantics{};
         std::shared_ptr<const void> storage;
         MathValue (*invoke)(const void*, const std::vector<MathValue>&) = nullptr;
     };
@@ -165,17 +170,17 @@ public:
     }
 
     template <class Sig, class F>
-    MathContext& add_function(std::string name, F&& function)
+    MathContext& add_function(std::string name, F&& function, CallableSemantics semantics = {})
     {
         using traits = detail::signature_traits<Sig>;
         auto& entry = m_data->m_functions[std::move(name)];
         if constexpr (traits::arity == 1)
         {
-            detail::upsert_overload(entry.unary_overloads, detail::make_unary_overload<Sig>(std::forward<F>(function)));
+            detail::upsert_overload(entry.unary_overloads, detail::make_unary_overload<Sig>(std::forward<F>(function), semantics));
         }
         else if constexpr (traits::arity == 2)
         {
-            detail::upsert_overload(entry.binary_overloads, detail::make_binary_overload<Sig>(std::forward<F>(function)));
+            detail::upsert_overload(entry.binary_overloads, detail::make_binary_overload<Sig>(std::forward<F>(function), semantics));
         }
         else
         {
@@ -185,69 +190,74 @@ public:
     }
 
     template <class F>
-    MathContext& add_function(std::string name, F&& function)
+    MathContext& add_function(std::string name, F&& function, CallableSemantics semantics = {})
     {
-        return add_function<fw::detail::fn_sig_t<F>>(std::move(name), std::forward<F>(function));
+        return add_function<fw::detail::fn_sig_t<F>>(std::move(name), std::forward<F>(function), semantics);
     }
 
     template <class Sig, class F>
-    MathContext with_function(std::string name, F&& function) const
+    MathContext with_function(std::string name, F&& function, CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
-        copy.template add_function<Sig>(std::move(name), std::forward<F>(function));
+        copy.template add_function<Sig>(std::move(name), std::forward<F>(function), semantics);
         return copy;
     }
 
     template <class F>
-    MathContext with_function(std::string name, F&& function) const
+    MathContext with_function(std::string name, F&& function, CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
-        copy.add_function(std::move(name), std::forward<F>(function));
+        copy.add_function(std::move(name), std::forward<F>(function), semantics);
         return copy;
     }
 
     template <class Sig, class F>
-    MathContext& register_function(std::string name, F&& function)
+    MathContext& register_function(std::string name, F&& function, CallableSemantics semantics = {})
     {
-        return add_function<Sig>(std::move(name), std::forward<F>(function));
+        return add_function<Sig>(std::move(name), std::forward<F>(function), semantics);
     }
 
     template <class F>
-    MathContext& register_function(std::string name, F&& function)
+    MathContext& register_function(std::string name, F&& function, CallableSemantics semantics = {})
     {
-        return add_function(std::move(name), std::forward<F>(function));
+        return add_function(std::move(name), std::forward<F>(function), semantics);
     }
 
     template <class... Sigs, class F>
-    MathContext& add_function_overloads(std::string name, F&& function)
+    MathContext& add_function_overloads(std::string name, F&& function, CallableSemantics semantics = {})
     {
         auto shared_function = std::decay_t<F>(std::forward<F>(function));
-        (add_function<Sigs>(name, shared_function), ...);
+        (add_function<Sigs>(name, shared_function, semantics), ...);
         return *this;
     }
 
     template <class... Ts, class F>
-    MathContext& add_function_for(std::string name, F&& function)
+    MathContext& add_function_for(std::string name, F&& function, CallableSemantics semantics = {})
     {
         return add_function_overloads<typename detail::unary_signature_for<Ts, std::decay_t<F>>::type...>(
-            std::move(name), std::forward<F>(function));
+            std::move(name), std::forward<F>(function), semantics);
     }
 
     template <class... Ts, class F>
-    MathContext& add_binary_function_for(std::string name, F&& function)
+    MathContext& add_binary_function_for(std::string name, F&& function, CallableSemantics semantics = {})
     {
         return add_function_overloads<typename detail::binary_signature_for<Ts, std::decay_t<F>>::type...>(
-            std::move(name), std::forward<F>(function));
+            std::move(name), std::forward<F>(function), semantics);
     }
 
     template <class F>
-    MathContext& add_variadic_function(std::string name, std::size_t min_arity, F&& function)
+    MathContext& add_variadic_function(
+        std::string name,
+        std::size_t min_arity,
+        F&& function,
+        CallableSemantics semantics = {})
     {
         using wrapper_t = fw::function_wrapper<MathValue(const std::vector<MathValue>&)>;
         auto storage = std::make_shared<wrapper_t>(std::forward<F>(function));
         auto& entry = m_data->m_functions[std::move(name)];
         entry.variadic_overloads.push_back(typename detail::FunctionEntry::VariadicOverload{
             min_arity,
+            semantics,
             storage,
             [](const void* raw_storage, const std::vector<MathValue>& arguments) {
                 const auto& wrapper = *static_cast<const wrapper_t*>(raw_storage);
@@ -258,7 +268,11 @@ public:
     }
 
     template <class T, class F>
-    MathContext& add_variadic_function_for(std::string name, std::size_t min_arity, F&& function)
+    MathContext& add_variadic_function_for(
+        std::string name,
+        std::size_t min_arity,
+        F&& function,
+        CallableSemantics semantics = {})
     {
         auto typed_function = std::decay_t<F>(std::forward<F>(function));
         return add_variadic_function(
@@ -272,178 +286,264 @@ public:
                     converted.push_back(argument.template cast<T>());
                 }
                 return MathValue(typed_function(converted));
-            });
+            },
+            semantics);
     }
 
     template <class F>
-    MathContext& register_variadic_function(std::string name, std::size_t min_arity, F&& function)
+    MathContext& register_variadic_function(
+        std::string name,
+        std::size_t min_arity,
+        F&& function,
+        CallableSemantics semantics = {})
     {
-        return add_variadic_function(std::move(name), min_arity, std::forward<F>(function));
+        return add_variadic_function(std::move(name), min_arity, std::forward<F>(function), semantics);
     }
 
     template <class T, class F>
-    MathContext& register_variadic_function_for(std::string name, std::size_t min_arity, F&& function)
+    MathContext& register_variadic_function_for(
+        std::string name,
+        std::size_t min_arity,
+        F&& function,
+        CallableSemantics semantics = {})
     {
-        return add_variadic_function_for<T>(std::move(name), min_arity, std::forward<F>(function));
+        return add_variadic_function_for<T>(std::move(name), min_arity, std::forward<F>(function), semantics);
     }
 
     template <class F>
-    MathContext with_variadic_function(std::string name, std::size_t min_arity, F&& function) const
+    MathContext with_variadic_function(
+        std::string name,
+        std::size_t min_arity,
+        F&& function,
+        CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
-        copy.add_variadic_function(std::move(name), min_arity, std::forward<F>(function));
+        copy.add_variadic_function(std::move(name), min_arity, std::forward<F>(function), semantics);
         return copy;
     }
 
     template <class T, class F>
-    MathContext with_variadic_function_for(std::string name, std::size_t min_arity, F&& function) const
+    MathContext with_variadic_function_for(
+        std::string name,
+        std::size_t min_arity,
+        F&& function,
+        CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
-        copy.template add_variadic_function_for<T>(std::move(name), min_arity, std::forward<F>(function));
+        copy.template add_variadic_function_for<T>(std::move(name), min_arity, std::forward<F>(function), semantics);
         return copy;
     }
 
     bool remove_function(const std::string& name);
 
     template <class Sig, class F>
-    MathContext& add_prefix_operator(std::string symbol, F&& function, int precedence = Precedence::Prefix)
+    MathContext&
+    add_prefix_operator(std::string symbol, F&& function, int precedence = Precedence::Prefix, CallableSemantics semantics = {})
     {
         auto& entry = m_data->m_prefix_operators[std::move(symbol)];
         entry.precedence = precedence;
-        detail::upsert_overload(entry.overloads, detail::make_unary_overload<Sig>(std::forward<F>(function)));
+        detail::upsert_overload(entry.overloads, detail::make_unary_overload<Sig>(std::forward<F>(function), semantics));
         m_rebuild_symbol_cache();
         return *this;
     }
 
     template <class F>
-    MathContext& add_prefix_operator(std::string symbol, F&& function, int precedence = Precedence::Prefix)
+    MathContext&
+    add_prefix_operator(std::string symbol, F&& function, int precedence = Precedence::Prefix, CallableSemantics semantics = {})
     {
-        return add_prefix_operator<fw::detail::fn_sig_t<F>>(std::move(symbol), std::forward<F>(function), precedence);
+        return add_prefix_operator<fw::detail::fn_sig_t<F>>(std::move(symbol), std::forward<F>(function), precedence, semantics);
     }
 
     template <class Sig, class F>
-    MathContext with_prefix_operator(std::string symbol, F&& function, int precedence = Precedence::Prefix) const
+    MathContext with_prefix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Prefix,
+        CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
-        copy.template add_prefix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence);
+        copy.template add_prefix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence, semantics);
         return copy;
     }
 
     template <class F>
-    MathContext with_prefix_operator(std::string symbol, F&& function, int precedence = Precedence::Prefix) const
+    MathContext with_prefix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Prefix,
+        CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
-        copy.add_prefix_operator(std::move(symbol), std::forward<F>(function), precedence);
+        copy.add_prefix_operator(std::move(symbol), std::forward<F>(function), precedence, semantics);
         return copy;
     }
 
     template <class Sig, class F>
-    MathContext& register_prefix_operator(std::string symbol, F&& function, int precedence = Precedence::Prefix)
+    MathContext& register_prefix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Prefix,
+        CallableSemantics semantics = {})
     {
-        return add_prefix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence);
+        return add_prefix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence, semantics);
     }
 
     template <class F>
-    MathContext& register_prefix_operator(std::string symbol, F&& function, int precedence = Precedence::Prefix)
+    MathContext& register_prefix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Prefix,
+        CallableSemantics semantics = {})
     {
-        return add_prefix_operator(std::move(symbol), std::forward<F>(function), precedence);
+        return add_prefix_operator(std::move(symbol), std::forward<F>(function), precedence, semantics);
     }
 
     template <class... Sigs, class F>
-    MathContext& add_prefix_operator_overloads(std::string symbol, F&& function, int precedence = Precedence::Prefix)
+    MathContext& add_prefix_operator_overloads(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Prefix,
+        CallableSemantics semantics = {})
     {
         auto shared_function = std::decay_t<F>(std::forward<F>(function));
-        (add_prefix_operator<Sigs>(symbol, shared_function, precedence), ...);
+        (add_prefix_operator<Sigs>(symbol, shared_function, precedence, semantics), ...);
         return *this;
     }
 
     template <class... Ts, class F>
-    MathContext& add_prefix_operator_for(std::string symbol, F&& function, int precedence = Precedence::Prefix)
+    MathContext& add_prefix_operator_for(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Prefix,
+        CallableSemantics semantics = {})
     {
         return add_prefix_operator_overloads<typename detail::unary_signature_for<Ts, std::decay_t<F>>::type...>(
-            std::move(symbol), std::forward<F>(function), precedence);
+            std::move(symbol), std::forward<F>(function), precedence, semantics);
     }
 
     bool remove_prefix_operator(const std::string& symbol);
 
     template <class Sig, class F>
-    MathContext& add_postfix_operator(std::string symbol, F&& function, int precedence = Precedence::Postfix)
+    MathContext&
+    add_postfix_operator(std::string symbol, F&& function, int precedence = Precedence::Postfix, CallableSemantics semantics = {})
     {
         auto& entry = m_data->m_postfix_operators[std::move(symbol)];
         entry.precedence = precedence;
-        detail::upsert_overload(entry.overloads, detail::make_unary_overload<Sig>(std::forward<F>(function)));
+        detail::upsert_overload(entry.overloads, detail::make_unary_overload<Sig>(std::forward<F>(function), semantics));
         m_rebuild_symbol_cache();
         return *this;
     }
 
     template <class F>
-    MathContext& add_postfix_operator(std::string symbol, F&& function, int precedence = Precedence::Postfix)
+    MathContext&
+    add_postfix_operator(std::string symbol, F&& function, int precedence = Precedence::Postfix, CallableSemantics semantics = {})
     {
-        return add_postfix_operator<fw::detail::fn_sig_t<F>>(std::move(symbol), std::forward<F>(function), precedence);
+        return add_postfix_operator<fw::detail::fn_sig_t<F>>(std::move(symbol), std::forward<F>(function), precedence, semantics);
     }
 
     template <class Sig, class F>
-    MathContext with_postfix_operator(std::string symbol, F&& function, int precedence = Precedence::Postfix) const
+    MathContext with_postfix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Postfix,
+        CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
-        copy.template add_postfix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence);
+        copy.template add_postfix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence, semantics);
         return copy;
     }
 
     template <class F>
-    MathContext with_postfix_operator(std::string symbol, F&& function, int precedence = Precedence::Postfix) const
+    MathContext with_postfix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Postfix,
+        CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
-        copy.add_postfix_operator(std::move(symbol), std::forward<F>(function), precedence);
+        copy.add_postfix_operator(std::move(symbol), std::forward<F>(function), precedence, semantics);
         return copy;
     }
 
     template <class Sig, class F>
-    MathContext& register_postfix_operator(std::string symbol, F&& function, int precedence = Precedence::Postfix)
+    MathContext& register_postfix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Postfix,
+        CallableSemantics semantics = {})
     {
-        return add_postfix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence);
+        return add_postfix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence, semantics);
     }
 
     template <class F>
-    MathContext& register_postfix_operator(std::string symbol, F&& function, int precedence = Precedence::Postfix)
+    MathContext& register_postfix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Postfix,
+        CallableSemantics semantics = {})
     {
-        return add_postfix_operator(std::move(symbol), std::forward<F>(function), precedence);
+        return add_postfix_operator(std::move(symbol), std::forward<F>(function), precedence, semantics);
     }
 
     template <class... Sigs, class F>
-    MathContext& add_postfix_operator_overloads(std::string symbol, F&& function, int precedence = Precedence::Postfix)
+    MathContext& add_postfix_operator_overloads(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Postfix,
+        CallableSemantics semantics = {})
     {
         auto shared_function = std::decay_t<F>(std::forward<F>(function));
-        (add_postfix_operator<Sigs>(symbol, shared_function, precedence), ...);
+        (add_postfix_operator<Sigs>(symbol, shared_function, precedence, semantics), ...);
         return *this;
     }
 
     template <class... Ts, class F>
-    MathContext& add_postfix_operator_for(std::string symbol, F&& function, int precedence = Precedence::Postfix)
+    MathContext& add_postfix_operator_for(
+        std::string symbol,
+        F&& function,
+        int precedence = Precedence::Postfix,
+        CallableSemantics semantics = {})
     {
         return add_postfix_operator_overloads<typename detail::unary_signature_for<Ts, std::decay_t<F>>::type...>(
-            std::move(symbol), std::forward<F>(function), precedence);
+            std::move(symbol), std::forward<F>(function), precedence, semantics);
     }
 
     bool remove_postfix_operator(const std::string& symbol);
 
     template <class Sig, class F>
     MathContext&
-    add_infix_operator(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    add_infix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
         auto& entry = m_data->m_infix_operators[std::move(symbol)];
         entry.precedence = precedence;
         entry.associativity = associativity;
-        detail::upsert_overload(entry.overloads, detail::make_binary_overload<Sig>(std::forward<F>(function)));
+        const CallableSemantics effective_semantics =
+            binary_policy == BinaryPolicyKind::None ? semantics : semantics.with_binary_policy(binary_policy);
+        detail::upsert_overload(
+            entry.overloads,
+            detail::make_binary_overload<Sig>(std::forward<F>(function), effective_semantics));
         m_rebuild_symbol_cache();
         return *this;
     }
 
     template <class F>
     MathContext&
-    add_infix_operator(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    add_infix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
-        return add_infix_operator<fw::detail::fn_sig_t<F>>(std::move(symbol), std::forward<F>(function), precedence, associativity);
+        return add_infix_operator<fw::detail::fn_sig_t<F>>(
+            std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
     }
 
     template <class Sig, class F>
@@ -451,10 +551,13 @@ public:
         std::string symbol,
         F&& function,
         int precedence,
-        Associativity associativity = Associativity::Left) const
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None) const
     {
         MathContext copy(*this);
-        copy.template add_infix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence, associativity);
+        copy.template add_infix_operator<Sig>(
+            std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
         return copy;
     }
 
@@ -463,42 +566,185 @@ public:
         std::string symbol,
         F&& function,
         int precedence,
-        Associativity associativity = Associativity::Left) const
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None) const
     {
         MathContext copy(*this);
-        copy.add_infix_operator(std::move(symbol), std::forward<F>(function), precedence, associativity);
+        copy.add_infix_operator(std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
         return copy;
     }
 
     template <class Sig, class F>
     MathContext&
-    register_infix_operator(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    register_infix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
-        return add_infix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence, associativity);
+        return add_infix_operator<Sig>(
+            std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
     }
 
     template <class F>
     MathContext&
-    register_infix_operator(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    register_infix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
-        return add_infix_operator(std::move(symbol), std::forward<F>(function), precedence, associativity);
+        return add_infix_operator(std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
     }
 
     template <class... Sigs, class F>
     MathContext&
-    add_infix_operator_overloads(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    add_infix_operator_overloads(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
         auto shared_function = std::decay_t<F>(std::forward<F>(function));
-        (add_infix_operator<Sigs>(symbol, shared_function, precedence, associativity), ...);
+        (add_infix_operator<Sigs>(symbol, shared_function, precedence, associativity, semantics, binary_policy), ...);
         return *this;
     }
 
     template <class... Ts, class F>
     MathContext&
-    add_infix_operator_for(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    add_infix_operator_for(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
         return add_infix_operator_overloads<typename detail::binary_signature_for<Ts, std::decay_t<F>>::type...>(
-            std::move(symbol), std::forward<F>(function), precedence, associativity);
+            std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
+    }
+
+    template <class Sig, class F, class PolicyF>
+    MathContext& add_infix_operator_with_policy(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        auto& entry = m_data->m_infix_operators[std::move(symbol)];
+        entry.precedence = precedence;
+        entry.associativity = associativity;
+        detail::upsert_overload(
+            entry.overloads,
+            detail::make_binary_overload_with_policy<Sig>(
+                std::forward<F>(function),
+                std::forward<PolicyF>(policy_handler),
+                semantics));
+        m_rebuild_symbol_cache();
+        return *this;
+    }
+
+    template <class F, class PolicyF>
+    MathContext& add_infix_operator_with_policy(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return add_infix_operator_with_policy<fw::detail::fn_sig_t<F>>(
+            std::move(symbol),
+            std::forward<F>(function),
+            precedence,
+            std::forward<PolicyF>(policy_handler),
+            associativity,
+            semantics);
+    }
+
+    template <class Sig, class F, class PolicyF>
+    MathContext& register_infix_operator_with_policy(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return add_infix_operator_with_policy<Sig>(
+            std::move(symbol),
+            std::forward<F>(function),
+            precedence,
+            std::forward<PolicyF>(policy_handler),
+            associativity,
+            semantics);
+    }
+
+    template <class F, class PolicyF>
+    MathContext& register_infix_operator_with_policy(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return add_infix_operator_with_policy(
+            std::move(symbol),
+            std::forward<F>(function),
+            precedence,
+            std::forward<PolicyF>(policy_handler),
+            associativity,
+            semantics);
+    }
+
+    template <class Sig, class F, class PolicyF>
+    MathContext with_infix_operator_with_policy(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {}) const
+    {
+        MathContext copy(*this);
+        copy.template add_infix_operator_with_policy<Sig>(
+            std::move(symbol),
+            std::forward<F>(function),
+            precedence,
+            std::forward<PolicyF>(policy_handler),
+            associativity,
+            semantics);
+        return copy;
+    }
+
+    template <class F, class PolicyF>
+    MathContext with_infix_operator_with_policy(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {}) const
+    {
+        MathContext copy(*this);
+        copy.add_infix_operator_with_policy(
+            std::move(symbol),
+            std::forward<F>(function),
+            precedence,
+            std::forward<PolicyF>(policy_handler),
+            associativity,
+            semantics);
+        return copy;
     }
 
     bool remove_infix_operator(const std::string& symbol);
@@ -883,15 +1129,17 @@ inline std::optional<FunctionInfo> MathContext::inspect_function(std::string_vie
     info.name = std::string(name);
     for (const auto& overload : entry->unary_overloads)
     {
-        info.unary_overloads.push_back(UnaryOverloadInfo{overload.result_type, overload.argument_type});
+        info.unary_overloads.push_back(UnaryOverloadInfo{overload.result_type, overload.argument_type, overload.semantics});
     }
     for (const auto& overload : entry->binary_overloads)
     {
-        info.binary_overloads.push_back(BinaryOverloadInfo{overload.result_type, overload.left_type, overload.right_type});
+        info.binary_overloads.push_back(
+            BinaryOverloadInfo{overload.result_type, overload.left_type, overload.right_type, overload.semantics});
     }
     for (const auto& overload : entry->variadic_overloads)
     {
         info.variadic_min_arities.push_back(overload.min_arity);
+        info.variadic_semantics.push_back(overload.semantics);
     }
     return info;
 }
@@ -909,7 +1157,7 @@ inline std::optional<OperatorInfo> MathContext::inspect_prefix_operator(std::str
     info.precedence = entry->precedence;
     for (const auto& overload : entry->overloads)
     {
-        info.unary_overloads.push_back(UnaryOverloadInfo{overload.result_type, overload.argument_type});
+        info.unary_overloads.push_back(UnaryOverloadInfo{overload.result_type, overload.argument_type, overload.semantics});
     }
     return info;
 }
@@ -927,7 +1175,7 @@ inline std::optional<OperatorInfo> MathContext::inspect_postfix_operator(std::st
     info.precedence = entry->precedence;
     for (const auto& overload : entry->overloads)
     {
-        info.unary_overloads.push_back(UnaryOverloadInfo{overload.result_type, overload.argument_type});
+        info.unary_overloads.push_back(UnaryOverloadInfo{overload.result_type, overload.argument_type, overload.semantics});
     }
     return info;
 }
@@ -946,7 +1194,8 @@ inline std::optional<OperatorInfo> MathContext::inspect_infix_operator(std::stri
     info.associativity = entry->associativity;
     for (const auto& overload : entry->overloads)
     {
-        info.binary_overloads.push_back(BinaryOverloadInfo{overload.result_type, overload.left_type, overload.right_type});
+        info.binary_overloads.push_back(
+            BinaryOverloadInfo{overload.result_type, overload.left_type, overload.right_type, overload.semantics});
     }
     return info;
 }

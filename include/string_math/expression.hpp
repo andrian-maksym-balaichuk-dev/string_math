@@ -10,7 +10,7 @@ class MathExpr
 public:
     explicit MathExpr(std::string expression, MathContext context = MathContext::with_builtins())
     : m_expression(std::move(expression)), m_parent_context(std::move(context)),
-      m_local_context(m_parent_context, true), m_operation(string_math::create_operation(m_expression, m_local_context))
+      m_local_context(m_parent_context, true), m_operation(string_math::try_parse_operation(m_expression, m_local_context).value().operation)
     {}
 
     MathExpr& substitute(std::string name, MathValue value)
@@ -184,44 +184,159 @@ public:
     }
 
     template <class Sig, class F>
-    MathExpr& add_infix_operator(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    MathExpr& add_infix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
-        m_local_context.template add_infix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence, associativity);
+        m_local_context.template add_infix_operator<Sig>(
+            std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
         return *this;
     }
 
     template <class F>
-    MathExpr& add_infix_operator(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    MathExpr& add_infix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
-        m_local_context.add_infix_operator(std::move(symbol), std::forward<F>(function), precedence, associativity);
+        m_local_context.add_infix_operator(
+            std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
         return *this;
     }
 
     template <class Sig, class F>
-    MathExpr& register_infix_operator(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    MathExpr& register_infix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
-        return add_infix_operator<Sig>(std::move(symbol), std::forward<F>(function), precedence, associativity);
+        return add_infix_operator<Sig>(
+            std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
     }
 
     template <class F>
-    MathExpr& register_infix_operator(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    MathExpr& register_infix_operator(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
-        return add_infix_operator(std::move(symbol), std::forward<F>(function), precedence, associativity);
+        return add_infix_operator(std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
     }
 
     template <class... Sigs, class F>
     MathExpr&
-    add_infix_operator_overloads(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    add_infix_operator_overloads(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
-        m_local_context.template add_infix_operator_overloads<Sigs...>(std::move(symbol), std::forward<F>(function), precedence, associativity);
+        m_local_context.template add_infix_operator_overloads<Sigs...>(
+            std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
         return *this;
     }
 
     template <class... Ts, class F>
-    MathExpr& add_infix_operator_for(std::string symbol, F&& function, int precedence, Associativity associativity = Associativity::Left)
+    MathExpr& add_infix_operator_for(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
     {
-        m_local_context.template add_infix_operator_for<Ts...>(std::move(symbol), std::forward<F>(function), precedence, associativity);
+        m_local_context.template add_infix_operator_for<Ts...>(
+            std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
         return *this;
+    }
+
+    template <class Sig, class F, class PolicyF>
+    MathExpr& add_infix_operator_with_policy(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        m_local_context.template add_infix_operator_with_policy<Sig>(
+            std::move(symbol),
+            std::forward<F>(function),
+            precedence,
+            std::forward<PolicyF>(policy_handler),
+            associativity,
+            semantics);
+        return *this;
+    }
+
+    template <class F, class PolicyF>
+    MathExpr& add_infix_operator_with_policy(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        m_local_context.add_infix_operator_with_policy(
+            std::move(symbol),
+            std::forward<F>(function),
+            precedence,
+            std::forward<PolicyF>(policy_handler),
+            associativity,
+            semantics);
+        return *this;
+    }
+
+    template <class Sig, class F, class PolicyF>
+    MathExpr& register_infix_operator_with_policy(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return add_infix_operator_with_policy<Sig>(
+            std::move(symbol),
+            std::forward<F>(function),
+            precedence,
+            std::forward<PolicyF>(policy_handler),
+            associativity,
+            semantics);
+    }
+
+    template <class F, class PolicyF>
+    MathExpr& register_infix_operator_with_policy(
+        std::string symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return add_infix_operator_with_policy(
+            std::move(symbol),
+            std::forward<F>(function),
+            precedence,
+            std::forward<PolicyF>(policy_handler),
+            associativity,
+            semantics);
     }
 
     template <class F>

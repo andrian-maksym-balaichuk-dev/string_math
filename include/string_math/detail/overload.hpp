@@ -1,11 +1,14 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include <string_math/policy.hpp>
 #include <string_math/result.hpp>
+#include <string_math/semantics.hpp>
 #include <string_math/value.hpp>
 
 namespace string_math::detail
@@ -15,6 +18,7 @@ struct UnaryOverload
 {
     ValueType result_type{};
     ValueType argument_type{};
+    CallableSemantics semantics{};
     std::shared_ptr<const void> storage;
     MathValue (*invoke)(const void*, const MathValue&) = nullptr;
 };
@@ -24,12 +28,15 @@ struct BinaryOverload
     ValueType result_type{};
     ValueType left_type{};
     ValueType right_type{};
+    CallableSemantics semantics{};
     std::shared_ptr<const void> storage;
     MathValue (*invoke)(const void*, const MathValue&, const MathValue&) = nullptr;
+    std::shared_ptr<const void> policy_storage;
+    Result<MathValue> (*policy_invoke)(const void*, const MathValue&, const MathValue&, const EvaluationPolicy&, std::string_view) = nullptr;
 };
 
 template <class Sig, class F>
-inline UnaryOverload make_unary_overload(F&& function)
+inline UnaryOverload make_unary_overload(F&& function, CallableSemantics semantics = {})
 {
     using traits = signature_traits<Sig>;
     static_assert(traits::arity == 1, "unary overload requires one parameter");
@@ -44,6 +51,7 @@ inline UnaryOverload make_unary_overload(F&& function)
     return UnaryOverload{
         value_type_of<result_t>::value,
         value_type_of<argument_t>::value,
+        semantics,
         storage,
         [](const void* raw_storage, const MathValue& argument) {
             const auto& wrapper = *static_cast<const wrapper_t*>(raw_storage);
@@ -53,7 +61,7 @@ inline UnaryOverload make_unary_overload(F&& function)
 }
 
 template <class Sig, class F>
-inline BinaryOverload make_binary_overload(F&& function)
+inline BinaryOverload make_binary_overload(F&& function, CallableSemantics semantics = {})
 {
     using traits = signature_traits<Sig>;
     static_assert(traits::arity == 2, "binary overload requires two parameters");
@@ -71,10 +79,61 @@ inline BinaryOverload make_binary_overload(F&& function)
         value_type_of<result_t>::value,
         value_type_of<left_t>::value,
         value_type_of<right_t>::value,
+        semantics,
         storage,
         [](const void* raw_storage, const MathValue& left, const MathValue& right) {
             const auto& wrapper = *static_cast<const wrapper_t*>(raw_storage);
             return MathValue(wrapper(left.template cast<left_t>(), right.template cast<right_t>()));
+        },
+        {},
+        nullptr,
+    };
+}
+
+template <class Sig, class F, class PolicyF>
+inline BinaryOverload make_binary_overload_with_policy(
+    F&& function,
+    PolicyF&& policy_handler,
+    CallableSemantics semantics = {})
+{
+    using traits = signature_traits<Sig>;
+    static_assert(traits::arity == 2, "binary overload requires two parameters");
+    using result_t = typename traits::result_type;
+    using left_t = std::tuple_element_t<0, typename traits::args_tuple>;
+    using right_t = std::tuple_element_t<1, typename traits::args_tuple>;
+    static_assert(is_supported_value_type_v<result_t>, "unsupported result type");
+    static_assert(is_supported_value_type_v<left_t>, "unsupported left type");
+    static_assert(is_supported_value_type_v<right_t>, "unsupported right type");
+
+    using wrapper_t = fw::function_wrapper<Sig>;
+    using policy_wrapper_t = std::decay_t<PolicyF>;
+
+    auto storage = std::make_shared<wrapper_t>(std::forward<F>(function));
+    auto policy_storage = std::make_shared<policy_wrapper_t>(std::forward<PolicyF>(policy_handler));
+
+    return BinaryOverload{
+        value_type_of<result_t>::value,
+        value_type_of<left_t>::value,
+        value_type_of<right_t>::value,
+        semantics,
+        storage,
+        [](const void* raw_storage, const MathValue& left, const MathValue& right) {
+            const auto& wrapper = *static_cast<const wrapper_t*>(raw_storage);
+            return MathValue(wrapper(left.template cast<left_t>(), right.template cast<right_t>()));
+        },
+        policy_storage,
+        [](const void* raw_policy_storage,
+           const MathValue& left,
+           const MathValue& right,
+           const EvaluationPolicy& policy,
+           std::string_view token) {
+            const auto& wrapper = *static_cast<const policy_wrapper_t*>(raw_policy_storage);
+            return std::invoke(
+                wrapper,
+                left.template cast<left_t>(),
+                right.template cast<right_t>(),
+                policy,
+                token);
         },
     };
 }
@@ -195,7 +254,11 @@ inline Result<const BinaryOverload*> try_resolve_binary_overload(
             continue;
         }
 
-        const int preferred_bonus = overload.left_type == preferred_target && overload.right_type == preferred_target ? -50 : 0;
+        int preferred_bonus = overload.left_type == preferred_target && overload.right_type == preferred_target ? -50 : 0;
+        if (policy == PromotionPolicy::WidenToFloating && is_floating(overload.left_type) && is_floating(overload.right_type))
+        {
+            preferred_bonus -= 1'000;
+        }
         const int total_cost = left_cost + right_cost + preferred_bonus;
         if (total_cost < best_cost)
         {
@@ -260,6 +323,192 @@ inline long double factorial_value(long double value)
         result *= static_cast<long double>(index);
     }
     return result;
+}
+
+template <class T>
+constexpr bool m_add_overflow(T left, T right, T& output)
+{
+    if constexpr (std::is_unsigned_v<T>)
+    {
+        output = static_cast<T>(left + right);
+        return output < left;
+    }
+    else
+    {
+        if ((right > 0 && left > std::numeric_limits<T>::max() - right) ||
+            (right < 0 && left < std::numeric_limits<T>::lowest() - right))
+        {
+            return true;
+        }
+        output = static_cast<T>(left + right);
+        return false;
+    }
+}
+
+template <class T>
+constexpr bool m_sub_overflow(T left, T right, T& output)
+{
+    if constexpr (std::is_unsigned_v<T>)
+    {
+        output = static_cast<T>(left - right);
+        return left < right;
+    }
+    else
+    {
+        if ((right < 0 && left > std::numeric_limits<T>::max() + right) ||
+            (right > 0 && left < std::numeric_limits<T>::lowest() + right))
+        {
+            return true;
+        }
+        output = static_cast<T>(left - right);
+        return false;
+    }
+}
+
+template <class T>
+inline bool m_mul_overflow(T left, T right, T& output)
+{
+    const long double product = static_cast<long double>(left) * static_cast<long double>(right);
+    if (product < static_cast<long double>(std::numeric_limits<T>::lowest()) ||
+        product > static_cast<long double>(std::numeric_limits<T>::max()))
+    {
+        return true;
+    }
+    output = static_cast<T>(left * right);
+    return false;
+}
+
+template <class T>
+constexpr T m_saturate_cast(long double value)
+{
+    if (value < static_cast<long double>(std::numeric_limits<T>::lowest()))
+    {
+        return std::numeric_limits<T>::lowest();
+    }
+    if (value > static_cast<long double>(std::numeric_limits<T>::max()))
+    {
+        return std::numeric_limits<T>::max();
+    }
+    return static_cast<T>(value);
+}
+
+template <class T>
+Result<MathValue> m_apply_binary_integral_policy(
+    BinaryPolicyKind kind,
+    T left,
+    T right,
+    const EvaluationPolicy& policy,
+    std::string_view token)
+{
+    T result{};
+    bool overflow = false;
+
+    switch (kind)
+    {
+    case BinaryPolicyKind::IntegralAddOverflow: overflow = m_add_overflow(left, right, result); break;
+    case BinaryPolicyKind::IntegralSubtractOverflow: overflow = m_sub_overflow(left, right, result); break;
+    case BinaryPolicyKind::IntegralMultiplyOverflow: overflow = m_mul_overflow(left, right, result); break;
+    case BinaryPolicyKind::None:
+        return Error(
+            ErrorKind::Internal,
+            "string_math: missing binary policy for integral overflow handling",
+            {},
+            std::string(token));
+    default: return Error(ErrorKind::Internal, "string_math: unsupported binary policy for overflow handling", {}, std::string(token));
+    }
+
+    if (!overflow || policy.overflow == OverflowPolicy::Wrap)
+    {
+        return MathValue(result);
+    }
+
+    if (policy.overflow == OverflowPolicy::Checked)
+    {
+        return Error(ErrorKind::Evaluation, "string_math: arithmetic overflow", {}, std::string(token));
+    }
+
+    long double computed = 0.0L;
+    switch (kind)
+    {
+    case BinaryPolicyKind::IntegralAddOverflow:
+        computed = static_cast<long double>(left) + static_cast<long double>(right);
+        break;
+    case BinaryPolicyKind::IntegralSubtractOverflow:
+        computed = static_cast<long double>(left) - static_cast<long double>(right);
+        break;
+    case BinaryPolicyKind::IntegralMultiplyOverflow:
+        computed = static_cast<long double>(left) * static_cast<long double>(right);
+        break;
+    default: break;
+    }
+
+    if (policy.overflow == OverflowPolicy::Saturate)
+    {
+        return MathValue(m_saturate_cast<T>(computed));
+    }
+
+    return MathValue(computed);
+}
+
+template <class T>
+Result<MathValue> m_apply_binary_policy_for_type(
+    const BinaryOverload& overload,
+    const MathValue& left,
+    const MathValue& right,
+    const EvaluationPolicy& policy,
+    std::string_view token)
+{
+    if (overload.policy_invoke != nullptr)
+    {
+        return overload.policy_invoke(overload.policy_storage.get(), left, right, policy, token);
+    }
+
+    if (std::is_integral_v<T> && overload.semantics.has_flag(CallableFlag::OverflowSensitive) &&
+        overload.semantics.binary_policy != BinaryPolicyKind::None)
+    {
+        return m_apply_binary_integral_policy(
+            overload.semantics.binary_policy,
+            left.template cast<T>(),
+            right.template cast<T>(),
+            policy,
+            token);
+    }
+
+    return overload.invoke(overload.storage.get(), left, right);
+}
+
+inline Result<MathValue> invoke_unary_overload(const UnaryOverload& overload, const MathValue& argument)
+{
+    return overload.invoke(overload.storage.get(), argument);
+}
+
+inline Result<MathValue> invoke_binary_overload(
+    const BinaryOverload& overload,
+    const MathValue& left,
+    const MathValue& right,
+    const EvaluationPolicy& policy,
+    std::string_view token)
+{
+    switch (overload.result_type)
+    {
+    case ValueType::Short: return m_apply_binary_policy_for_type<short>(overload, left, right, policy, token);
+    case ValueType::UnsignedShort:
+        return m_apply_binary_policy_for_type<unsigned short>(overload, left, right, policy, token);
+    case ValueType::Int: return m_apply_binary_policy_for_type<int>(overload, left, right, policy, token);
+    case ValueType::UnsignedInt: return m_apply_binary_policy_for_type<unsigned int>(overload, left, right, policy, token);
+    case ValueType::Long: return m_apply_binary_policy_for_type<long>(overload, left, right, policy, token);
+    case ValueType::UnsignedLong:
+        return m_apply_binary_policy_for_type<unsigned long>(overload, left, right, policy, token);
+    case ValueType::LongLong: return m_apply_binary_policy_for_type<long long>(overload, left, right, policy, token);
+    case ValueType::UnsignedLongLong:
+        return m_apply_binary_policy_for_type<unsigned long long>(overload, left, right, policy, token);
+    case ValueType::Float: return m_apply_binary_policy_for_type<float>(overload, left, right, policy, token);
+    case ValueType::Double: return m_apply_binary_policy_for_type<double>(overload, left, right, policy, token);
+    case ValueType::LongDouble:
+        return m_apply_binary_policy_for_type<long double>(overload, left, right, policy, token);
+    }
+
+    return Error(ErrorKind::Internal, "string_math: unsupported binary overload result type", {}, std::string(token));
 }
 
 } // namespace string_math::detail

@@ -123,6 +123,10 @@ int main()
         const auto plus_info = calculator.context().inspect_infix_operator("+");
         require(plus_info.has_value(), "introspection should inspect infix operators");
         require(plus_info->precedence == fx::Precedence::Additive, "introspection should expose precedence");
+        require(
+            !plus_info->binary_overloads.empty() &&
+                plus_info->binary_overloads.front().semantics.arithmetic_kind == fx::ArithmeticKind::Add,
+            "introspection should expose overload semantics");
 
         const fx::MathContext built_context = fx::MathContext::with_builtins()
                                                   .with_value("builder_value", 12)
@@ -130,10 +134,98 @@ int main()
         require(fx::evaluate("{builder_value}", built_context).get<int>() == 12, "with_value should build immutable copies");
         require(fx::evaluate("1 join 2", built_context).get<int>() == 3, "with_infix_operator should build immutable copies");
 
+        fx::EvaluationPolicy floating_policy;
+        floating_policy.promotion = fx::PromotionPolicy::WidenToFloating;
+        fx::MathContext floating_context = fx::MathContext::with_builtins().with_policy(floating_policy);
+        require(fx::evaluate("1 + 2", floating_context).is<double>(), "widen-to-floating policy should prefer floating overloads");
+
+        fx::Calculator narrowing_calculator;
+        fx::EvaluationPolicy narrowing_policy;
+        narrowing_policy.narrowing = fx::NarrowingPolicy::Checked;
+        narrowing_calculator.context().set_policy(narrowing_policy);
+        bool narrowing_threw = false;
+        try
+        {
+            (void)narrowing_calculator.evaluate_as<short>("70000");
+        }
+        catch (const std::out_of_range&)
+        {
+            narrowing_threw = true;
+        }
+        require(narrowing_threw, "checked narrowing should reject out-of-range conversions");
+
+        fx::MathContext checked_context = fx::MathContext::with_builtins();
+        fx::EvaluationPolicy checked_policy;
+        checked_policy.overflow = fx::OverflowPolicy::Checked;
+        checked_context.set_policy(checked_policy);
+        checked_context.add_infix_operator<unsigned int(unsigned int, unsigned int)>(
+            "plus_meta",
+            [](unsigned int left, unsigned int right) { return left + right; },
+            fx::Precedence::Additive,
+            fx::Associativity::Left,
+            fx::OperatorSemantics::arithmetic_add());
+        checked_context.add_infix_operator<unsigned int(unsigned int, unsigned int)>(
+            "plus_raw",
+            [](unsigned int left, unsigned int right) { return left + right; },
+            fx::Precedence::Additive,
+            fx::Associativity::Left);
+        checked_context.add_infix_operator<unsigned int(unsigned int, unsigned int)>(
+            "times_policy",
+            [](unsigned int left, unsigned int right) { return left * right; },
+            fx::Precedence::Multiplicative,
+            fx::Associativity::Left,
+            {},
+            fx::BinaryPolicyKind::IntegralMultiplyOverflow);
+        const auto meta_overflow = fx::try_evaluate("4294967295u plus_meta 1u", checked_context);
+        require(!meta_overflow.has_value(), "metadata-marked custom add should participate in overflow policy");
+        require(meta_overflow.error().kind() == fx::ErrorKind::Evaluation, "checked overflow should be evaluation error");
+        require(fx::evaluate("4294967295u plus_raw 1u", checked_context).get<unsigned int>() == 0u, "custom operator without semantics should use raw callable behavior");
+        const auto direct_policy_overflow = fx::try_evaluate("65536u times_policy 65536u", checked_context);
+        require(!direct_policy_overflow.has_value(), "explicit binary policy argument should participate in overflow checks");
+        require(direct_policy_overflow.error().kind() == fx::ErrorKind::Evaluation, "explicit binary policy should report overflow");
+        checked_context.add_infix_operator_with_policy<unsigned int(unsigned int, unsigned int)>(
+            "plus_custom",
+            [](unsigned int left, unsigned int right) { return left * right; },
+            fx::Precedence::Additive,
+            [](unsigned int left, unsigned int right, const fx::EvaluationPolicy& policy, std::string_view token)
+                -> fx::Result<fx::MathValue> {
+                const auto product = static_cast<unsigned long long>(left) * static_cast<unsigned long long>(right);
+                if (policy.overflow == fx::OverflowPolicy::Checked &&
+                    product > static_cast<unsigned long long>(std::numeric_limits<unsigned int>::max()))
+                {
+                    return fx::Error(
+                        fx::ErrorKind::Evaluation,
+                        "string_math: custom operator overflow",
+                        {},
+                        std::string(token));
+                }
+                return fx::MathValue(static_cast<unsigned int>(left * right));
+            });
+        const auto custom_policy_overflow = fx::try_evaluate("65536u plus_custom 65536u", checked_context);
+        require(!custom_policy_overflow.has_value(), "custom policy callback should be available when adding operators");
+        require(custom_policy_overflow.error().token() == "plus_custom", "custom policy should receive operator token");
+        checked_context.add_infix_operator<unsigned int(unsigned int, unsigned int)>(
+            "+",
+            [](unsigned int left, unsigned int right) { return left * right; },
+            fx::Precedence::Additive,
+            fx::Associativity::Left,
+            fx::OperatorSemantics::arithmetic_multiply());
+        const auto multiply_overflow = fx::try_evaluate("65536u + 65536u", checked_context);
+        require(!multiply_overflow.has_value(), "overflow policy should come from registered overload metadata, not the operator symbol");
+        require(multiply_overflow.error().kind() == fx::ErrorKind::Evaluation, "custom '+' with multiply policy should still report overflow");
+
         const fx::Operation cached = calculator.create_operation("{a} * 4");
         require(calculator.evaluate(cached) == 8, "cached operation should use current variable values");
         calculator.set_value("a", 5);
         require(calculator.evaluate(cached) == 20, "cached operation should be reusable");
+
+        const auto parsed = fx::try_parse_operation("2 + 3 * 4", calculator.context());
+        require(parsed.has_value(), "explicit parse stage should succeed");
+        const auto bound = fx::try_bind_operation(parsed.value(), calculator.snapshot());
+        require(bound.has_value(), "explicit bind stage should succeed");
+        const auto optimized = fx::try_optimize_operation(bound.value());
+        require(optimized.has_value(), "explicit optimize stage should succeed");
+        require(fx::evaluate(optimized.value(), bound.value().context).get<int>() == 14, "optimized operation should evaluate");
 
         calculator.add_infix_operator(
             "avg", [](double left, double right) { return (left + right) / 2.0; }, fx::Precedence::Additive, fx::Associativity::Left);
@@ -141,6 +233,19 @@ int main()
 
         calculator.add_function("cos", [](double) { return 42.0; });
         require(approx_equal(calculator.evaluate("cos(1.5)").get<double>(), 42.0), "custom function should override builtin");
+        require(calculator.evaluate("max(1, 9, 3)").get<int>() == 9, "builtin variadic max should evaluate");
+        calculator.add_variadic_function(
+            "sum",
+            1,
+            [](const std::vector<fx::MathValue>& arguments) {
+                int total = 0;
+                for (const auto& argument : arguments)
+                {
+                    total += argument.get<int>();
+                }
+                return fx::MathValue(total);
+            });
+        require(calculator.evaluate("sum(1, 2, 3, 4)").get<int>() == 10, "custom variadic function should evaluate");
 
         fx::Calculator alias_calculator;
         alias_calculator.register_variable("x", 5);

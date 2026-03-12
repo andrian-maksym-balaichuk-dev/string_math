@@ -1,6 +1,9 @@
 #pragma once
 
+#include <type_traits>
+
 #include <string_math/calculator.hpp>
+#include <string_math/constexpr_context.hpp>
 #include <string_math/detail/builtins.hpp>
 #include <string_math/detail/constexpr.hpp>
 #include <string_math/expression.hpp>
@@ -44,6 +47,20 @@ template <std::size_t N>
 constexpr MathValue evaluate(const char (&expression)[N])
 {
     return detail::ConstexprParser(std::string_view(expression, N - 1)).parse();
+}
+
+template <class Context, class = void>
+struct is_constexpr_context : std::false_type
+{};
+
+template <class Context>
+struct is_constexpr_context<Context, std::void_t<decltype(Context::is_constexpr_context)>> : std::bool_constant<Context::is_constexpr_context>
+{};
+
+template <std::size_t N, class Context, std::enable_if_t<is_constexpr_context<Context>::value, int> = 0>
+constexpr MathValue evaluate(const char (&expression)[N], const Context& context)
+{
+    return detail::ConstexprParser<Context>(std::string_view(expression, N - 1), &context).parse();
 }
 
 constexpr MathValue operator""_math(const char* expression, std::size_t size)
