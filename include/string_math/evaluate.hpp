@@ -43,11 +43,7 @@ inline MathValue evaluate(const Operation& operation, const MathContext& context
 }
 
 #if STRING_MATH_HAS_CONSTEXPR_EVALUATION
-template <std::size_t N>
-constexpr MathValue evaluate(const char (&expression)[N])
-{
-    return detail::ConstexprParser(std::string_view(expression, N - 1)).parse();
-}
+inline constexpr auto k_builtin_cx_context = with_builtins(detail::StaticMathContext<>{});
 
 template <class Context, class = void>
 struct is_constexpr_context : std::false_type
@@ -57,6 +53,13 @@ template <class Context>
 struct is_constexpr_context<Context, std::void_t<decltype(Context::is_constexpr_context)>> : std::bool_constant<Context::is_constexpr_context>
 {};
 
+template <std::size_t N>
+constexpr MathValue evaluate(const char (&expression)[N])
+{
+    return detail::ConstexprParser<decltype(k_builtin_cx_context)>(
+        std::string_view(expression, N - 1), &k_builtin_cx_context).parse();
+}
+
 template <std::size_t N, class Context, std::enable_if_t<is_constexpr_context<Context>::value, int> = 0>
 constexpr MathValue evaluate(const char (&expression)[N], const Context& context)
 {
@@ -65,13 +68,15 @@ constexpr MathValue evaluate(const char (&expression)[N], const Context& context
 
 constexpr MathValue operator""_math(const char* expression, std::size_t size)
 {
-    return detail::ConstexprParser(std::string_view(expression, size)).parse();
+    return detail::ConstexprParser<decltype(k_builtin_cx_context)>(
+        std::string_view(expression, size), &k_builtin_cx_context).parse();
 }
 
 template <detail::fixed_string Expression>
 consteval MathValue evaluate_ct()
 {
-    return detail::ConstexprParser(Expression.view()).parse();
+    return detail::ConstexprParser<decltype(k_builtin_cx_context)>(
+        Expression.view(), &k_builtin_cx_context).parse();
 }
 #else
 inline MathValue operator""_math(const char* expression, std::size_t size)

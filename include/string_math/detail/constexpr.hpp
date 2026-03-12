@@ -1,32 +1,11 @@
 #pragma once
 
 #include <string_math/detail/builtins.hpp>
+#include <string_math/detail/fixed_string.hpp>
 #include <string_math/value.hpp>
 
 namespace string_math::detail
 {
-
-template <std::size_t N>
-struct fixed_string
-{
-    std::array<char, N> value{};
-
-    constexpr fixed_string(const char (&text)[N])
-    {
-        for (std::size_t index = 0; index < N; ++index)
-        {
-            value[index] = text[index];
-        }
-    }
-
-    constexpr std::string_view view() const noexcept
-    {
-        return std::string_view(value.data(), N - 1);
-    }
-};
-
-template <std::size_t N>
-fixed_string(const char (&)[N]) -> fixed_string<N>;
 
 template <class Context = void>
 class ConstexprParser
@@ -136,14 +115,6 @@ private:
                 }
             }
         }
-        const std::string_view symbol = match_builtin_infix_symbol(tail);
-        if (!symbol.empty())
-        {
-            if (const auto* entry = find_builtin_infix_operator(symbol); entry != nullptr)
-            {
-                return {entry->symbol, entry->precedence, entry->associativity};
-            }
-        }
         return {};
     }
 
@@ -164,14 +135,6 @@ private:
                 }
             }
         }
-        const std::string_view symbol = match_builtin_prefix_symbol(tail);
-        if (!symbol.empty())
-        {
-            if (const auto* entry = find_builtin_prefix_operator(symbol); entry != nullptr)
-            {
-                return {entry->symbol, entry->precedence};
-            }
-        }
         return {};
     }
 
@@ -190,14 +153,6 @@ private:
                         return {entry->symbol, entry->precedence};
                     }
                 }
-            }
-        }
-        const std::string_view symbol = match_builtin_postfix_symbol(tail);
-        if (!symbol.empty())
-        {
-            if (const auto* entry = find_builtin_postfix_operator(symbol); entry != nullptr)
-            {
-                return {entry->symbol, entry->precedence};
             }
         }
         return {};
@@ -350,10 +305,6 @@ private:
                     return function->invoke(arguments.data(), count);
                 }
             }
-        }
-        if (const auto* function = find_builtin_function(name); function != nullptr)
-        {
-            return function->invoke(arguments.data(), count);
         }
 
         throw std::invalid_argument("string_math: unsupported constexpr function");
@@ -630,10 +581,6 @@ private:
                 }
             }
         }
-        if (const auto* entry = find_builtin_infix_operator(symbol); entry != nullptr)
-        {
-            return entry->invoke(left, right);
-        }
         throw std::invalid_argument("string_math: unsupported constexpr operator");
     }
 
@@ -649,10 +596,6 @@ private:
                 }
             }
         }
-        if (const auto* entry = find_builtin_prefix_operator(symbol); entry != nullptr)
-        {
-            return entry->invoke(value);
-        }
         throw std::invalid_argument("string_math: unsupported constexpr prefix operator");
     }
 
@@ -667,10 +610,6 @@ private:
                     return entry->invoke(value);
                 }
             }
-        }
-        if (const auto* entry = find_builtin_postfix_operator(symbol); entry != nullptr)
-        {
-            return entry->invoke(value);
         }
         throw std::invalid_argument("string_math: unsupported constexpr postfix operator");
     }

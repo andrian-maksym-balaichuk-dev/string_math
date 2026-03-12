@@ -30,6 +30,33 @@ void require(bool condition, const char* message)
     }
 }
 
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+int add_runtime_shaped_two(int value)
+{
+    return value + 2;
+}
+
+int prefix_runtime_shaped_double(int value)
+{
+    return value * 2;
+}
+
+int infix_runtime_shaped_join(int left, int right)
+{
+    return left + right;
+}
+
+int runtime_identity(int value)
+{
+    return value;
+}
+
+int runtime_join_two(int left, int right)
+{
+    return left + right;
+}
+#endif
+
 } // namespace
 
 int main()
@@ -255,11 +282,56 @@ int main()
         require(alias_calculator.evaluate("id({x})").get<int>() == 5, "register_function should forward to function registration");
         require(alias_calculator.evaluate("1 sum 2").get<int>() == 3, "register_infix_operator should forward to operator registration");
 
+        const fx::MathContext free_builtin_context = fx::with_builtins(fx::MathContext{});
+        require(fx::evaluate("{PI} + 1", free_builtin_context).is<double>(), "free with_builtins should configure runtime contexts");
+
         calculator.add_infix_operator_for<int, float, double>(
             "mean", [](auto left, auto right) { return (left + right) / static_cast<decltype(left)>(2); },
             fx::Precedence::Additive, fx::Associativity::Left);
         require(calculator.evaluate("6 mean 2").get<int>() == 4, "multi-type infix helper should register int overload");
         require(approx_equal(calculator.evaluate("5.0 mean 3.0").get<double>(), 4.0), "multi-type infix helper should register double overload");
+
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+        fx::MathContext templated_context;
+        templated_context.set_value("templated_value", 4);
+        templated_context.add_function<runtime_identity>("id2");
+        templated_context.add_infix_operator<runtime_join_two>("join2", fx::Precedence::Additive);
+        require(
+            fx::evaluate("id2({templated_value}) join2 3", templated_context).get<int>() == 7,
+            "runtime context should support the same name-parameter builder style in c++20+");
+
+        fx::Calculator fixed_string_calculator;
+        fixed_string_calculator.register_function<int(int), add_runtime_shaped_two>("plus_two");
+        fixed_string_calculator.register_prefix_operator<int(int), prefix_runtime_shaped_double>("dbl");
+        fixed_string_calculator.register_infix_operator<int(int, int), infix_runtime_shaped_join>(
+            "join",
+            fx::Precedence::Additive);
+        require(
+            fixed_string_calculator.evaluate("plus_two(3)").get<int>() == 5,
+            "Calculator fixed-string function registration should support explicit Sig overloads");
+        require(
+            fixed_string_calculator.evaluate("dbl 4").get<int>() == 8,
+            "Calculator fixed-string prefix registration should support explicit Sig overloads");
+        require(
+            fixed_string_calculator.evaluate("1 join 2").get<int>() == 3,
+            "Calculator fixed-string infix registration should support explicit Sig overloads");
+
+        fx::MathExpr fixed_string_expr("1");
+        fixed_string_expr.register_function<int(int), add_runtime_shaped_two>("plus_two");
+        fixed_string_expr.register_prefix_operator<int(int), prefix_runtime_shaped_double>("dbl");
+        fixed_string_expr.register_infix_operator<int(int, int), infix_runtime_shaped_join>(
+            "join",
+            fx::Precedence::Additive);
+        require(
+            fixed_string_expr.context().find_function("plus_two") != nullptr,
+            "MathExpr fixed-string function registration should update local context");
+        require(
+            fixed_string_expr.context().find_prefix_operator("dbl") != nullptr,
+            "MathExpr fixed-string prefix registration should update local context");
+        require(
+            fixed_string_expr.context().find_infix_operator("join") != nullptr,
+            "MathExpr fixed-string infix registration should update local context");
+#endif
 
         calculator.add_literal_parser("", "kg", [](std::string_view token) -> std::optional<fx::MathValue> {
             const std::string body(token.substr(0, token.size() - 2));

@@ -63,17 +63,40 @@ public:
         m_context.set_value(std::move(name), value);
         return *this;
     }
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <std::size_t NameSize, class T>
+    Calculator& set_value(const char (&name)[NameSize], T value)
+    {
+        m_context.set_value(name, value);
+        return *this;
+    }
+#endif
 
     Calculator& add_variable(std::string name, MathValue value)
     {
         m_context.add_variable(std::move(name), value);
         return *this;
     }
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <std::size_t NameSize, class T>
+    Calculator& add_variable(const char (&name)[NameSize], T value)
+    {
+        m_context.add_variable(name, value);
+        return *this;
+    }
+#endif
 
     Calculator& register_variable(std::string name, MathValue value)
     {
         return add_variable(std::move(name), value);
     }
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <std::size_t NameSize, class T>
+    Calculator& register_variable(const char (&name)[NameSize], T value)
+    {
+        return add_variable(name, value);
+    }
+#endif
 
     bool remove_variable(const std::string& name)
     {
@@ -93,6 +116,22 @@ public:
         m_context.add_function(std::move(name), std::forward<F>(function));
         return *this;
     }
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <class Sig, auto Function, std::size_t NameSize>
+    Calculator& add_function(const char (&name)[NameSize], CallableSemantics semantics = {})
+    {
+        m_context.template add_function<Sig, Function>(name, semantics);
+        return *this;
+    }
+
+    template <auto Function, std::size_t NameSize>
+    Calculator& add_function(const char (&name)[NameSize], CallableSemantics semantics = {})
+    {
+        m_context.template add_function<Function>(name, semantics);
+        return *this;
+    }
+
+#endif
 
     template <class Sig, class F>
     Calculator& register_function(std::string name, F&& function)
@@ -105,6 +144,20 @@ public:
     {
         return add_function(std::move(name), std::forward<F>(function));
     }
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <class Sig, auto Function, std::size_t NameSize>
+    Calculator& register_function(const char (&name)[NameSize], CallableSemantics semantics = {})
+    {
+        return add_function<Sig, Function>(name, semantics);
+    }
+
+    template <auto Function, std::size_t NameSize>
+    Calculator& register_function(const char (&name)[NameSize], CallableSemantics semantics = {})
+    {
+        return add_function<Function>(name, semantics);
+    }
+
+#endif
 
     template <class... Sigs, class F>
     Calculator& add_function_overloads(std::string name, F&& function)
@@ -171,6 +224,49 @@ public:
         m_context.add_prefix_operator(std::move(symbol), std::forward<F>(function), precedence);
         return *this;
     }
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <class Sig, auto Function, std::size_t SymbolSize>
+    Calculator& add_prefix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence = Precedence::Prefix,
+        CallableSemantics semantics = {})
+    {
+        m_context.template add_prefix_operator<Sig, Function>(symbol, precedence, semantics);
+        return *this;
+    }
+
+    template <auto Function, std::size_t SymbolSize>
+    Calculator& add_prefix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence = Precedence::Prefix,
+        CallableSemantics semantics = {})
+    {
+        m_context.template add_prefix_operator<Function>(symbol, precedence, semantics);
+        return *this;
+    }
+
+#endif
+
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <class Sig, auto Function, std::size_t SymbolSize>
+    Calculator& register_prefix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence = Precedence::Prefix,
+        CallableSemantics semantics = {})
+    {
+        return add_prefix_operator<Sig, Function>(symbol, precedence, semantics);
+    }
+
+    template <auto Function, std::size_t SymbolSize>
+    Calculator& register_prefix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence = Precedence::Prefix,
+        CallableSemantics semantics = {})
+    {
+        return add_prefix_operator<Function>(symbol, precedence, semantics);
+    }
+
+#endif
 
     template <class Sig, class F>
     Calculator& register_prefix_operator(std::string symbol, F&& function, int precedence = Precedence::Prefix)
@@ -211,6 +307,49 @@ public:
         m_context.add_postfix_operator(std::move(symbol), std::forward<F>(function), precedence);
         return *this;
     }
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <class Sig, auto Function, std::size_t SymbolSize>
+    Calculator& add_postfix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence = Precedence::Postfix,
+        CallableSemantics semantics = {})
+    {
+        m_context.template add_postfix_operator<Sig, Function>(symbol, precedence, semantics);
+        return *this;
+    }
+
+    template <auto Function, std::size_t SymbolSize>
+    Calculator& add_postfix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence = Precedence::Postfix,
+        CallableSemantics semantics = {})
+    {
+        m_context.template add_postfix_operator<Function>(symbol, precedence, semantics);
+        return *this;
+    }
+
+#endif
+
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <class Sig, auto Function, std::size_t SymbolSize>
+    Calculator& register_postfix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence = Precedence::Postfix,
+        CallableSemantics semantics = {})
+    {
+        return add_postfix_operator<Sig, Function>(symbol, precedence, semantics);
+    }
+
+    template <auto Function, std::size_t SymbolSize>
+    Calculator& register_postfix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence = Precedence::Postfix,
+        CallableSemantics semantics = {})
+    {
+        return add_postfix_operator<Function>(symbol, precedence, semantics);
+    }
+
+#endif
 
     template <class Sig, class F>
     Calculator& register_postfix_operator(std::string symbol, F&& function, int precedence = Precedence::Postfix)
@@ -266,6 +405,57 @@ public:
         m_context.add_infix_operator(std::move(symbol), std::forward<F>(function), precedence, associativity, semantics, binary_policy);
         return *this;
     }
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <class Sig, auto Function, std::size_t SymbolSize>
+    Calculator& add_infix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+    {
+        m_context.template add_infix_operator<Sig, Function>(symbol, precedence, associativity, semantics, binary_policy);
+        return *this;
+    }
+
+    template <auto Function, std::size_t SymbolSize>
+    Calculator& add_infix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+    {
+        m_context.template add_infix_operator<Function>(symbol, precedence, associativity, semantics, binary_policy);
+        return *this;
+    }
+
+#endif
+
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <class Sig, auto Function, std::size_t SymbolSize>
+    Calculator& register_infix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+    {
+        return add_infix_operator<Sig, Function>(symbol, precedence, associativity, semantics, binary_policy);
+    }
+
+    template <auto Function, std::size_t SymbolSize>
+    Calculator& register_infix_operator(
+        const char (&symbol)[SymbolSize],
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {},
+        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+    {
+        return add_infix_operator<Function>(symbol, precedence, associativity, semantics, binary_policy);
+    }
+
+#endif
 
     template <class Sig, class F>
     Calculator&
@@ -361,6 +551,18 @@ public:
             semantics);
         return *this;
     }
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <auto Function, auto PolicyHandler, std::size_t SymbolSize>
+    Calculator& add_infix_operator_with_policy(
+        const char (&symbol)[SymbolSize],
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        m_context.template add_infix_operator_with_policy<Function, PolicyHandler>(symbol, precedence, associativity, semantics);
+        return *this;
+    }
+#endif
 
     template <class Sig, class F, class PolicyF>
     Calculator& register_infix_operator_with_policy(
@@ -397,6 +599,17 @@ public:
             associativity,
             semantics);
     }
+#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <auto Function, auto PolicyHandler, std::size_t SymbolSize>
+    Calculator& register_infix_operator_with_policy(
+        const char (&symbol)[SymbolSize],
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return add_infix_operator_with_policy<Function, PolicyHandler>(symbol, precedence, associativity, semantics);
+    }
+#endif
 
     bool remove_prefix_operator(const std::string& symbol)
     {
