@@ -302,7 +302,7 @@ private:
             {
                 if (const auto* function = m_context->find_function(name); function != nullptr)
                 {
-                    return function->invoke(arguments.data(), count);
+                    return invoke_constexpr_function(*function, arguments.data(), count);
                 }
             }
         }
@@ -577,7 +577,7 @@ private:
             {
                 if (const auto* entry = m_context->find_infix_operator(symbol); entry != nullptr)
                 {
-                    return entry->invoke(left, right);
+                    return invoke_constexpr_infix(*entry, left, right);
                 }
             }
         }
@@ -592,7 +592,7 @@ private:
             {
                 if (const auto* entry = m_context->find_prefix_operator(symbol); entry != nullptr)
                 {
-                    return entry->invoke(value);
+                    return invoke_constexpr_prefix(*entry, value);
                 }
             }
         }
@@ -607,7 +607,7 @@ private:
             {
                 if (const auto* entry = m_context->find_postfix_operator(symbol); entry != nullptr)
                 {
-                    return entry->invoke(value);
+                    return invoke_constexpr_postfix(*entry, value);
                 }
             }
         }

@@ -3,7 +3,6 @@
 using string_math::evaluate;
 using string_math::operator""_math;
 
-#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
 constexpr int custom_plus_one(int left, int right)
 {
     return left + right + 1;
@@ -23,7 +22,6 @@ constexpr int custom_square(int value)
 {
     return value * value;
 }
-#endif
 
 static_assert(evaluate("1 + 2").is<int>(), "1 + 2 should stay int at compile time");
 static_assert(evaluate("1 + 2").get<int>() == 3, "1 + 2 should equal 3");
@@ -50,34 +48,49 @@ static_assert(evaluate("{value} + 3", custom_context).get<int>() == 8, "constexp
 constexpr auto builtin_context = string_math::with_builtins(string_math::MathContext::compile_time());
 static_assert(evaluate("{PI} + 1", builtin_context).get<double>() > 4.0, "free with_builtins should configure constexpr contexts");
 
+constexpr auto chained_context = string_math::with_builtins(string_math::MathContext::compile_time())
+                                     .add_variable("a", 2)
+                                     .set_value("b", 3);
+static_assert(
+    evaluate("{a} * {b} + 1", chained_context).get<int>() == 7,
+    "constexpr context builder should still support values and builtins");
+
 constexpr auto custom_infix_context =
-    string_math::MathContext::compile_time().add_infix_operator<custom_plus_one>("plus1", string_math::Precedence::Additive);
-static_assert(evaluate("2 plus1 3", custom_infix_context).get<int>() == 6, "constexpr custom infix operators should work");
+    string_math::MathContext::compile_time().add_infix_operator("plus1", custom_plus_one, string_math::Precedence::Additive);
+static_assert(
+    evaluate("2 plus1 3", custom_infix_context).get<int>() == 6,
+    "constexpr custom infix operators should work");
 
 constexpr auto custom_prefix_context =
-    string_math::MathContext::compile_time().add_prefix_operator<custom_double>("dbl");
-static_assert(evaluate("dbl 4", custom_prefix_context).get<int>() == 8, "constexpr custom prefix operators should work");
+    string_math::MathContext::compile_time().add_prefix_operator("dbl", custom_double);
+static_assert(
+    evaluate("dbl 4", custom_prefix_context).get<int>() == 8,
+    "constexpr custom prefix operators should work");
 
 constexpr auto custom_postfix_context =
-    string_math::MathContext::compile_time().add_postfix_operator<custom_increment>("++");
-static_assert(evaluate("4++", custom_postfix_context).get<int>() == 5, "constexpr custom postfix operators should work");
+    string_math::MathContext::compile_time().add_postfix_operator("++", custom_increment);
+static_assert(
+    evaluate("4++", custom_postfix_context).get<int>() == 5,
+    "constexpr custom postfix operators should work");
 
 constexpr auto custom_postfix_sig_context =
-    string_math::MathContext::compile_time().register_postfix_operator<int(int), custom_increment>("+++");
+    string_math::MathContext::compile_time().register_postfix_operator<int(int)>("+++", custom_increment);
 static_assert(
     evaluate("4+++", custom_postfix_sig_context).get<int>() == 5,
     "constexpr postfix registration should support the runtime-shaped Sig overload family");
 
 constexpr auto custom_function_context =
-    string_math::MathContext::compile_time().add_function<custom_square>("square");
-static_assert(evaluate("square(5)", custom_function_context).get<int>() == 25, "constexpr custom functions should work");
-
-constexpr auto chained_context = string_math::MathContext::compile_time()
-                                     .add_variable("a", 2)
-                                     .add_infix_operator<custom_plus_one>("sum1", string_math::Precedence::Additive)
-                                     .add_function<custom_square>("square");
+    string_math::MathContext::compile_time().add_function("square", custom_square);
 static_assert(
-    evaluate("square({a} sum1 3)", chained_context).get<int>() == 36,
+    evaluate("square(5)", custom_function_context).get<int>() == 25,
+    "constexpr custom functions should work");
+
+constexpr auto chained_custom_context = string_math::MathContext::compile_time()
+                                            .add_variable("a", 2)
+                                            .add_infix_operator<custom_plus_one>("sum1", string_math::Precedence::Additive)
+                                            .add_function<custom_square>("square");
+static_assert(
+    evaluate("square({a} sum1 3)", chained_custom_context).get<int>() == 36,
     "constexpr context builder aliases should chain like runtime setup");
 #endif
 

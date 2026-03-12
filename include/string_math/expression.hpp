@@ -1,12 +1,11 @@
 #pragma once
 
-#include <string_math/detail/context_owner_interface.hpp>
 #include <string_math/operation.hpp>
 
 namespace string_math
 {
 
-class MathExpr : public detail::ContextOwnerInterface<MathExpr>
+class MathExpr
 {
 public:
     explicit MathExpr(std::string expression, MathContext context = MathContext::with_builtins())

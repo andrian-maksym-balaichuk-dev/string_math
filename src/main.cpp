@@ -6,8 +6,9 @@
 int main()
 {
     string_math::Calculator calculator;
+    auto& context = calculator.context();
 
-    calculator.add_infix_operator(
+    context.add_infix_operator(
         "avg", [](double left, double right) { return (left + right) / 2.0; }, string_math::Precedence::Additive,
         string_math::Associativity::Left);
 

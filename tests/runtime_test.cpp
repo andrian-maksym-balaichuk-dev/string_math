@@ -5,6 +5,7 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using fx::operator""_math;
@@ -118,6 +119,42 @@ int main()
         std::ostringstream stream;
         stream << fx::MathValue(4.0f);
         require(stream.str() == "4f", "MathValue stream output should be available");
+
+        {
+            fx::MathContext named_context;
+            const std::string runtime_name = "runtime_value";
+            const std::string_view view_name = "view_value";
+            const std::string runtime_function = "id_from_string";
+            const std::string_view view_function = "id_from_view";
+            const std::string runtime_symbol = "sum_from_string";
+            const std::string_view view_symbol = "sum_from_view";
+
+            named_context.set_value(runtime_name, 7);
+            named_context.set_value(view_name, 8);
+            named_context.register_function(runtime_function, [](int value) { return value; });
+            named_context.register_function(view_function, [](int value) { return value; });
+            named_context.register_infix_operator(runtime_symbol, [](int left, int right) { return left + right; }, fx::Precedence::Additive);
+            named_context.register_infix_operator(view_symbol, [](int left, int right) { return left + right; }, fx::Precedence::Additive);
+
+            require(
+                fx::evaluate("{runtime_value}", named_context).get<int>() == 7,
+                "runtime MathContext should accept std::string variable names");
+            require(
+                fx::evaluate("{view_value}", named_context).get<int>() == 8,
+                "runtime MathContext should accept std::string_view variable names");
+            require(
+                fx::evaluate("id_from_string(3)", named_context).get<int>() == 3,
+                "runtime MathContext should accept std::string function names");
+            require(
+                fx::evaluate("id_from_view(4)", named_context).get<int>() == 4,
+                "runtime MathContext should accept std::string_view function names");
+            require(
+                fx::evaluate("1 sum_from_string 2", named_context).get<int>() == 3,
+                "runtime MathContext should accept std::string operator symbols");
+            require(
+                fx::evaluate("1 sum_from_view 2", named_context).get<int>() == 3,
+                "runtime MathContext should accept std::string_view operator symbols");
+        }
 
         calculator.set_value("a", 2);
         calculator.set_value("b", 3U);
@@ -254,14 +291,14 @@ int main()
         require(optimized.has_value(), "explicit optimize stage should succeed");
         require(fx::evaluate(optimized.value(), bound.value().context).get<int>() == 14, "optimized operation should evaluate");
 
-        calculator.add_infix_operator(
+        calculator.context().add_infix_operator(
             "avg", [](double left, double right) { return (left + right) / 2.0; }, fx::Precedence::Additive, fx::Associativity::Left);
         require(approx_equal(calculator.evaluate("8 avg 4").get<double>(), 6.0), "custom infix operator should evaluate");
 
-        calculator.add_function("cos", [](double) { return 42.0; });
+        calculator.context().add_function("cos", [](double) { return 42.0; });
         require(approx_equal(calculator.evaluate("cos(1.5)").get<double>(), 42.0), "custom function should override builtin");
         require(calculator.evaluate("max(1, 9, 3)").get<int>() == 9, "builtin variadic max should evaluate");
-        calculator.add_variadic_function(
+        calculator.context().add_variadic_function(
             "sum",
             1,
             [](const std::vector<fx::MathValue>& arguments) {
@@ -275,17 +312,17 @@ int main()
         require(calculator.evaluate("sum(1, 2, 3, 4)").get<int>() == 10, "custom variadic function should evaluate");
 
         fx::Calculator alias_calculator;
-        alias_calculator.register_variable("x", 5);
-        alias_calculator.register_function("id", [](int value) { return value; });
-        alias_calculator.register_infix_operator(
+        alias_calculator.context().register_variable("x", 5);
+        alias_calculator.context().register_function("id", [](int value) { return value; });
+        alias_calculator.context().register_infix_operator(
             "sum", [](int left, int right) { return left + right; }, fx::Precedence::Additive, fx::Associativity::Left);
-        require(alias_calculator.evaluate("id({x})").get<int>() == 5, "register_function should forward to function registration");
-        require(alias_calculator.evaluate("1 sum 2").get<int>() == 3, "register_infix_operator should forward to operator registration");
+        require(alias_calculator.evaluate("id({x})").get<int>() == 5, "configured calculator context should resolve registered functions");
+        require(alias_calculator.evaluate("1 sum 2").get<int>() == 3, "configured calculator context should resolve registered operators");
 
         const fx::MathContext free_builtin_context = fx::with_builtins(fx::MathContext{});
         require(fx::evaluate("{PI} + 1", free_builtin_context).is<double>(), "free with_builtins should configure runtime contexts");
 
-        calculator.add_infix_operator_for<int, float, double>(
+        calculator.context().add_infix_operator_for<int, float, double>(
             "mean", [](auto left, auto right) { return (left + right) / static_cast<decltype(left)>(2); },
             fx::Precedence::Additive, fx::Associativity::Left);
         require(calculator.evaluate("6 mean 2").get<int>() == 4, "multi-type infix helper should register int overload");
@@ -301,9 +338,9 @@ int main()
             "runtime context should support the same name-parameter builder style in c++20+");
 
         fx::Calculator fixed_string_calculator;
-        fixed_string_calculator.register_function<int(int), add_runtime_shaped_two>("plus_two");
-        fixed_string_calculator.register_prefix_operator<int(int), prefix_runtime_shaped_double>("dbl");
-        fixed_string_calculator.register_infix_operator<int(int, int), infix_runtime_shaped_join>(
+        fixed_string_calculator.context().register_function<int(int), add_runtime_shaped_two>("plus_two");
+        fixed_string_calculator.context().register_prefix_operator<int(int), prefix_runtime_shaped_double>("dbl");
+        fixed_string_calculator.context().register_infix_operator<int(int, int), infix_runtime_shaped_join>(
             "join",
             fx::Precedence::Additive);
         require(
@@ -317,9 +354,9 @@ int main()
             "Calculator fixed-string infix registration should support explicit Sig overloads");
 
         fx::MathExpr fixed_string_expr("1");
-        fixed_string_expr.register_function<int(int), add_runtime_shaped_two>("plus_two");
-        fixed_string_expr.register_prefix_operator<int(int), prefix_runtime_shaped_double>("dbl");
-        fixed_string_expr.register_infix_operator<int(int, int), infix_runtime_shaped_join>(
+        fixed_string_expr.mutable_context().register_function<int(int), add_runtime_shaped_two>("plus_two");
+        fixed_string_expr.mutable_context().register_prefix_operator<int(int), prefix_runtime_shaped_double>("dbl");
+        fixed_string_expr.mutable_context().register_infix_operator<int(int, int), infix_runtime_shaped_join>(
             "join",
             fx::Precedence::Additive);
         require(
@@ -333,7 +370,7 @@ int main()
             "MathExpr fixed-string infix registration should update local context");
 #endif
 
-        calculator.add_literal_parser("", "kg", [](std::string_view token) -> std::optional<fx::MathValue> {
+        calculator.context().add_literal_parser("", "kg", [](std::string_view token) -> std::optional<fx::MathValue> {
             const std::string body(token.substr(0, token.size() - 2));
             return fx::MathValue(static_cast<long long>(std::stoll(body) * 1000LL));
         });
@@ -353,6 +390,11 @@ int main()
         require(contains_name(names, "PI"), "variables() should include inherited variable");
         const std::vector<std::string> local_names = expression.local_variables();
         require(contains_name(local_names, "x"), "local_variables() should include substituted variable");
+
+        fx::MathExpr power_expression("2 + 3");
+        power_expression.mutable_context().add_infix_operator<double(double, double)>(
+            "+", [](double left, double right) { return std::pow(left, right); }, fx::Precedence::Additive, fx::Associativity::Left);
+        require(approx_equal(power_expression.eval().get<double>(), 8.0), "local operator override should affect expression evaluation");
 
         const auto compiled = fx::MathExpr("{value} + 2").compile<double>("value");
         const fx::MathValue compiled_result = compiled(5.0);

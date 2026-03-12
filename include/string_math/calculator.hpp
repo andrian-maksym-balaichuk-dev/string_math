@@ -1,16 +1,43 @@
 #pragma once
 
-#include <string_math/detail/context_owner_interface.hpp>
 #include <string_math/operation.hpp>
 
 namespace string_math
 {
 
-class Calculator : public detail::ContextOwnerInterface<Calculator>
+class Calculator
 {
 public:
     Calculator() : m_context(MathContext::with_builtins()) {}
     explicit Calculator(MathContext context) : m_context(std::move(context)) {}
+
+    Calculator& set_context(MathContext context)
+    {
+        m_context = std::move(context);
+        return *this;
+    }
+
+    Calculator& set_value(std::string_view name, MathValue value)
+    {
+        m_context.set_value(name, value);
+        return *this;
+    }
+
+    Calculator& add_variable(std::string_view name, MathValue value)
+    {
+        m_context.add_variable(name, value);
+        return *this;
+    }
+
+    Calculator& register_variable(std::string_view name, MathValue value)
+    {
+        return add_variable(name, value);
+    }
+
+    bool remove_variable(std::string_view name)
+    {
+        return m_context.remove_variable(name);
+    }
 
     MathValue evaluate(std::string_view expression) const
     {

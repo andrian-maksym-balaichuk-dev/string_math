@@ -39,13 +39,13 @@ target_include_directories(
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_link_libraries(string_math INTERFACE fw::wrapper)
-target_compile_features(string_math INTERFACE cxx_std_17)
+target_compile_features(string_math INTERFACE cxx_std_23)
 set_target_properties(string_math PROPERTIES CXX_EXTENSIONS OFF)
 
 if(STRING_MATH_BUILD_EXAMPLES)
     add_executable(string_math_demo src/main.cpp)
     target_link_libraries(string_math_demo PRIVATE string_math::string_math)
-    target_compile_features(string_math_demo PRIVATE cxx_std_17)
+    target_compile_features(string_math_demo PRIVATE cxx_std_23)
     set_target_properties(string_math_demo PROPERTIES CXX_EXTENSIONS OFF)
 endif()
 

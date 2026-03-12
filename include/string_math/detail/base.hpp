@@ -38,6 +38,16 @@
 #define STRING_MATH_UNSIGNED_FACTORIAL_SIGNATURES \
     unsigned short(unsigned short), unsigned int(unsigned int), unsigned long(unsigned long), unsigned long long(unsigned long long)
 
+#define STRING_MATH_ALL_UNARY_SAME_TYPE_SIGNATURES \
+    short(short), unsigned short(unsigned short), int(int), unsigned int(unsigned int), long(long), unsigned long(unsigned long), \
+        long long(long long), unsigned long long(unsigned long long), float(float), double(double), long double(long double)
+
+#define STRING_MATH_ALL_BINARY_SAME_TYPE_SIGNATURES \
+    short(short, short), unsigned short(unsigned short, unsigned short), int(int, int), unsigned int(unsigned int, unsigned int), \
+        long(long, long), unsigned long(unsigned long, unsigned long), long long(long long, long long), \
+        unsigned long long(unsigned long long, unsigned long long), float(float, float), double(double, double), \
+        long double(long double, long double)
+
 namespace string_math
 {
 
