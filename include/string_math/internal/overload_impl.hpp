@@ -39,6 +39,42 @@ struct BinaryOverload
     Result<MathValue> (*policy_invoke)(const void*, const MathValue&, const MathValue&, const EvaluationPolicy&, std::string_view) = nullptr;
 };
 
+struct FunctionOverload
+{
+    ValueType result_type{};
+    std::vector<ValueType> argument_types;
+    CallableSemantics semantics{};
+    std::shared_ptr<const void> storage;
+    MathValue (*invoke)(const void*, const std::vector<MathValue>&) = nullptr;
+
+    std::size_t arity() const noexcept
+    {
+        return argument_types.size();
+    }
+};
+
+template <class ArgsTuple, std::size_t... Indices>
+inline std::vector<ValueType> m_make_function_argument_types(std::index_sequence<Indices...>)
+{
+    return std::vector<ValueType>{ value_type_of<std::tuple_element_t<Indices, ArgsTuple>>::value... };
+}
+
+template <class ArgsTuple, std::size_t... Indices>
+inline constexpr bool m_are_supported_function_argument_types(std::index_sequence<Indices...>)
+{
+    return (is_supported_value_type_v<std::tuple_element_t<Indices, ArgsTuple>> && ...);
+}
+
+template <class Traits, class Wrapper, std::size_t... Indices>
+inline MathValue m_invoke_function_overload_impl(
+    const Wrapper& wrapper,
+    const std::vector<MathValue>& arguments,
+    std::index_sequence<Indices...>)
+{
+    return MathValue(
+        wrapper(arguments[Indices].template cast<std::tuple_element_t<Indices, typename Traits::args_tuple>>()...));
+}
+
 template <class Sig, class F>
 inline UnaryOverload make_unary_overload(F&& function, CallableSemantics semantics = {})
 {
@@ -142,6 +178,39 @@ inline BinaryOverload make_binary_overload_with_policy(
     };
 }
 
+template <class Sig, class F>
+inline FunctionOverload make_function_overload(F&& function, CallableSemantics semantics = {})
+{
+    using traits = signature_traits<Sig>;
+    using result_t = typename traits::result_type;
+    static_assert(is_supported_value_type_v<result_t>, "unsupported result type");
+    static_assert(
+        m_are_supported_function_argument_types<typename traits::args_tuple>(std::make_index_sequence<traits::arity>{}),
+        "unsupported function argument type");
+
+    using wrapper_t = fw::function_wrapper<Sig>;
+    auto storage = std::make_shared<wrapper_t>(std::forward<F>(function));
+
+    return FunctionOverload{
+        value_type_of<result_t>::value,
+        m_make_function_argument_types<typename traits::args_tuple>(std::make_index_sequence<traits::arity>{}),
+        semantics,
+        storage,
+        [](const void* raw_storage, const std::vector<MathValue>& arguments) {
+            if (arguments.size() != traits::arity)
+            {
+                throw std::invalid_argument("string_math: function argument count mismatch");
+            }
+
+            const auto& wrapper = *static_cast<const wrapper_t*>(raw_storage);
+            return m_invoke_function_overload_impl<traits>(
+                wrapper,
+                arguments,
+                std::make_index_sequence<traits::arity>{});
+        },
+    };
+}
+
 template <class Overload>
 void upsert_overload(std::vector<Overload>& overloads, Overload overload);
 
@@ -178,10 +247,52 @@ inline void upsert_overload(std::vector<BinaryOverload>& overloads, BinaryOverlo
     overloads.push_back(std::move(overload));
 }
 
+template <>
+inline void upsert_overload(std::vector<FunctionOverload>& overloads, FunctionOverload overload)
+{
+    const auto found = std::find_if(overloads.begin(), overloads.end(), [&](const FunctionOverload& current) {
+        return current.argument_types == overload.argument_types && current.result_type == overload.result_type;
+    });
+
+    if (found != overloads.end())
+    {
+        *found = std::move(overload);
+        return;
+    }
+
+    overloads.push_back(std::move(overload));
+}
+
 struct ResolutionError : std::runtime_error
 {
     using std::runtime_error::runtime_error;
 };
+
+inline bool m_all_integral_types(const std::vector<ValueType>& types)
+{
+    return std::all_of(types.begin(), types.end(), [](ValueType type) { return is_integral(type); });
+}
+
+inline bool m_all_floating_types(const std::vector<ValueType>& types)
+{
+    return std::all_of(types.begin(), types.end(), [](ValueType type) { return is_floating(type); });
+}
+
+inline int m_widen_to_floating_bonus(const std::vector<ValueType>& source_types, const std::vector<ValueType>& target_types)
+{
+    if (target_types.empty() || !m_all_floating_types(target_types))
+    {
+        return 0;
+    }
+
+    int bonus = -1'000;
+    if (m_all_integral_types(source_types) &&
+        std::all_of(target_types.begin(), target_types.end(), [](ValueType type) { return type == ValueType::Double; }))
+    {
+        bonus -= 100;
+    }
+    return bonus;
+}
 
 inline Result<const UnaryOverload*>
 try_resolve_unary_overload(const std::vector<UnaryOverload>& overloads, ValueType argument_type, std::string_view symbol)
@@ -259,9 +370,11 @@ inline Result<const BinaryOverload*> try_resolve_binary_overload(
         }
 
         int preferred_bonus = overload.left_type == preferred_target && overload.right_type == preferred_target ? -50 : 0;
-        if (policy == PromotionPolicy::WidenToFloating && is_floating(overload.left_type) && is_floating(overload.right_type))
+        if (policy == PromotionPolicy::WidenToFloating)
         {
-            preferred_bonus -= 1'000;
+            preferred_bonus += m_widen_to_floating_bonus(
+                std::vector<ValueType>{left_type, right_type},
+                std::vector<ValueType>{overload.left_type, overload.right_type});
         }
         const int total_cost = left_cost + right_cost + preferred_bonus;
         if (total_cost < best_cost)
@@ -306,6 +419,107 @@ resolve_binary_overload(
     PromotionPolicy policy = PromotionPolicy::CppLike)
 {
     return *try_resolve_binary_overload(overloads, left_type, right_type, symbol, policy).value();
+}
+
+inline bool has_fixed_function_arity(const std::vector<FunctionOverload>& overloads, std::size_t arity)
+{
+    return std::any_of(overloads.begin(), overloads.end(), [&](const FunctionOverload& overload) {
+        return overload.arity() == arity;
+    });
+}
+
+inline Result<const FunctionOverload*> try_resolve_function_overload(
+    const std::vector<FunctionOverload>& overloads,
+    const std::vector<ValueType>& argument_types,
+    std::string_view symbol,
+    PromotionPolicy policy = PromotionPolicy::CppLike)
+{
+    const FunctionOverload* best = nullptr;
+    int best_cost = std::numeric_limits<int>::max();
+    bool ambiguous = false;
+
+    for (const auto& overload : overloads)
+    {
+        if (overload.arity() != argument_types.size())
+        {
+            continue;
+        }
+
+        int total_cost = 0;
+        bool supported = true;
+        for (std::size_t index = 0; index < argument_types.size(); ++index)
+        {
+            const int cost = conversion_cost(argument_types[index], overload.argument_types[index]);
+            if (cost >= 1'000'000)
+            {
+                supported = false;
+                break;
+            }
+            total_cost += cost;
+        }
+
+        if (!supported)
+        {
+            continue;
+        }
+
+        if (argument_types.size() == 2)
+        {
+            const ValueType preferred_target = preferred_binary_target(argument_types[0], argument_types[1]);
+            int preferred_bonus =
+                overload.argument_types[0] == preferred_target && overload.argument_types[1] == preferred_target ? -50 : 0;
+            if (policy == PromotionPolicy::WidenToFloating)
+            {
+                preferred_bonus += m_widen_to_floating_bonus(argument_types, overload.argument_types);
+            }
+            total_cost += preferred_bonus;
+        }
+        else if (policy == PromotionPolicy::WidenToFloating)
+        {
+            total_cost += m_widen_to_floating_bonus(argument_types, overload.argument_types);
+        }
+
+        if (total_cost < best_cost)
+        {
+            best = &overload;
+            best_cost = total_cost;
+            ambiguous = false;
+        }
+        else if (total_cost == best_cost)
+        {
+            ambiguous = true;
+        }
+    }
+
+    if (best == nullptr)
+    {
+        return Error(
+            ErrorKind::OverloadResolution,
+            "string_math: no matching function overload for '" + std::string(symbol) + "'",
+            {},
+            std::string(symbol));
+    }
+
+    if (ambiguous)
+    {
+        return Error(
+            ErrorKind::OverloadResolution,
+            "string_math: ambiguous function overload for '" + std::string(symbol) + "'",
+            {},
+            std::string(symbol));
+    }
+
+    return best;
+}
+
+inline const FunctionOverload&
+resolve_function_overload(
+    const std::vector<FunctionOverload>& overloads,
+    const std::vector<ValueType>& argument_types,
+    std::string_view symbol,
+    PromotionPolicy policy = PromotionPolicy::CppLike)
+{
+    return *try_resolve_function_overload(overloads, argument_types, symbol, policy).value();
 }
 
 template <class T>
@@ -396,6 +610,11 @@ Result<MathValue> m_apply_binary_policy_for_type(
 inline Result<MathValue> invoke_unary_overload(const UnaryOverload& overload, const MathValue& argument)
 {
     return overload.invoke(overload.storage.get(), argument);
+}
+
+inline Result<MathValue> invoke_function_overload(const FunctionOverload& overload, const std::vector<MathValue>& arguments)
+{
+    return overload.invoke(overload.storage.get(), arguments);
 }
 
 inline Result<MathValue> invoke_binary_overload(

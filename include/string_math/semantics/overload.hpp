@@ -24,9 +24,17 @@ struct BinaryOverloadInfo
     CallableSemantics semantics{};
 };
 
+struct FunctionOverloadInfo
+{
+    ValueType result_type{};
+    std::vector<ValueType> argument_types;
+    CallableSemantics semantics{};
+};
+
 struct FunctionInfo
 {
     std::string name;
+    std::vector<FunctionOverloadInfo> fixed_overloads;
     std::vector<UnaryOverloadInfo> unary_overloads;
     std::vector<BinaryOverloadInfo> binary_overloads;
     std::vector<std::size_t> variadic_min_arities;

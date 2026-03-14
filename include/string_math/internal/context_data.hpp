@@ -42,8 +42,7 @@ struct InfixOperatorEntry
 
 struct FunctionEntry
 {
-    std::vector<UnaryOverload> unary_overloads;
-    std::vector<BinaryOverload> binary_overloads;
+    std::vector<FunctionOverload> fixed_overloads;
     struct VariadicOverload
     {
         std::size_t min_arity{1};

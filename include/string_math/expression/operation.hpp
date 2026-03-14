@@ -434,7 +434,8 @@ inline Result<int> internal::Parser::m_parse_primary()
             return m_parse_function_call(identifier);
         }
 
-        if (const auto* entry = m_context.find_function(identifier.text); entry != nullptr && !entry->unary_overloads.empty())
+        if (const auto* entry = m_context.find_function(identifier.text);
+            entry != nullptr && internal::has_fixed_function_arity(entry->fixed_overloads, 1))
         {
             const auto argument_result = m_parse_expression(Precedence::Prefix);
             if (!argument_result)
@@ -450,7 +451,7 @@ inline Result<int> internal::Parser::m_parse_primary()
                 -1,
                 -1,
                 1,
-                {},
+                {argument_result.value()},
                 identifier.span,
             });
         }
@@ -680,16 +681,11 @@ inline bool has_foldable_function(const MathContext& context, std::string_view n
 {
     if (const auto* entry = context.find_function(name); entry != nullptr)
     {
-        if (arity == 1)
+        if (internal::has_fixed_function_arity(entry->fixed_overloads, static_cast<std::size_t>(arity)))
         {
-            return std::any_of(entry->unary_overloads.begin(), entry->unary_overloads.end(), [](const auto& overload) {
-                return overload.semantics.has_flag(CallableFlag::Foldable);
-            });
-        }
-        if (arity == 2)
-        {
-            return std::any_of(entry->binary_overloads.begin(), entry->binary_overloads.end(), [](const auto& overload) {
-                return overload.semantics.has_flag(CallableFlag::Foldable);
+            return std::any_of(entry->fixed_overloads.begin(), entry->fixed_overloads.end(), [&](const auto& overload) {
+                return overload.arity() == static_cast<std::size_t>(arity) &&
+                    overload.semantics.has_flag(CallableFlag::Foldable);
             });
         }
         return std::any_of(entry->variadic_overloads.begin(), entry->variadic_overloads.end(), [&](const auto& overload) {
@@ -1014,51 +1010,26 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                     node.text);
             }
 
-            if (node.arity == 1)
+            std::vector<MathValue> arguments;
+            std::vector<ValueType> argument_types;
+            arguments.reserve(node.arguments.size());
+            argument_types.reserve(node.arguments.size());
+            for (const int argument_index : node.arguments)
             {
-                const auto argument_result = evaluate_node(node.left);
+                const auto argument_result = evaluate_node(argument_index);
                 if (!argument_result)
                 {
                     return argument_result.error();
                 }
 
-                const auto overload_result =
-                    internal::try_resolve_unary_overload(entry->unary_overloads, argument_result.value().type(), node.text);
-                if (!overload_result)
-                {
-                    return Error(overload_result.error().kind(), overload_result.error().message(), node.span, node.text);
-                }
-
-                try
-                {
-                    return internal::invoke_unary_overload(*overload_result.value(), argument_result.value());
-                }
-                catch (const std::exception& error)
-                {
-                    return Error(ErrorKind::Evaluation, error.what(), node.span, node.text);
-                }
+                arguments.push_back(argument_result.value());
+                argument_types.push_back(argument_result.value().type());
             }
 
-            if (node.arity == 2)
+            if (internal::has_fixed_function_arity(entry->fixed_overloads, arguments.size()))
             {
-                const auto left_result = evaluate_node(node.left);
-                if (!left_result)
-                {
-                    return left_result.error();
-                }
-
-                const auto right_result = evaluate_node(node.right);
-                if (!right_result)
-                {
-                    return right_result.error();
-                }
-
-                const auto overload_result = internal::try_resolve_binary_overload(
-                    entry->binary_overloads,
-                    left_result.value().type(),
-                    right_result.value().type(),
-                    node.text,
-                    context.policy().promotion);
+                const auto overload_result =
+                    internal::try_resolve_function_overload(entry->fixed_overloads, argument_types, node.text, context.policy().promotion);
                 if (!overload_result)
                 {
                     return Error(overload_result.error().kind(), overload_result.error().message(), node.span, node.text);
@@ -1066,12 +1037,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
                 try
                 {
-                    return internal::invoke_binary_overload(
-                        *overload_result.value(),
-                        left_result.value(),
-                        right_result.value(),
-                        context.policy(),
-                        node.text);
+                    return internal::invoke_function_overload(*overload_result.value(), arguments);
                 }
                 catch (const std::exception& error)
                 {
@@ -1081,18 +1047,6 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
             if (!entry->variadic_overloads.empty())
             {
-                std::vector<MathValue> arguments;
-                arguments.reserve(node.arguments.size());
-                for (const int argument_index : node.arguments)
-                {
-                    const auto argument_result = evaluate_node(argument_index);
-                    if (!argument_result)
-                    {
-                        return argument_result.error();
-                    }
-                    arguments.push_back(argument_result.value());
-                }
-
                 for (const auto& overload : entry->variadic_overloads)
                 {
                     if (arguments.size() < overload.min_arity)

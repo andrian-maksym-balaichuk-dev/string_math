@@ -298,6 +298,17 @@ int main()
         calculator.context().add_function("cos", [](double) { return 42.0; });
         require(approx_equal(calculator.evaluate("cos(1.5)").get<double>(), 42.0), "custom function should override builtin");
         require(calculator.evaluate("max(1, 9, 3)").get<int>() == 9, "builtin variadic max should evaluate");
+        calculator.context().add_function("answer", []() { return 42; });
+        calculator.context().add_function("sum3", [](int a, int b, int c) { return a + b + c; });
+        calculator.context().add_function("sum6", [](int a, int b, int c, int d, int e, int f) { return a + b + c + d + e + f; });
+        require(calculator.evaluate("answer()").get<int>() == 42, "fixed zero-arity function should evaluate");
+        require(calculator.evaluate("sum3(1, 2, 3)").get<int>() == 6, "fixed ternary function should evaluate");
+        require(calculator.evaluate("sum6(1, 2, 3, 4, 5, 6)").get<int>() == 21, "fixed 6-argument function should evaluate");
+        const auto sum3_info = calculator.context().inspect_function("sum3");
+        require(sum3_info.has_value(), "introspection should inspect fixed-arity functions");
+        require(
+            !sum3_info->fixed_overloads.empty() && sum3_info->fixed_overloads.front().argument_types.size() == 3,
+            "introspection should expose fixed-arity function signatures");
         calculator.context().add_variadic_function(
             "sum",
             1,

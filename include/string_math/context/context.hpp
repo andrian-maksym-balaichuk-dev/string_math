@@ -119,20 +119,10 @@ public:
     template <class Sig, class F>
     MathContext& add_function(std::string_view name, F&& function, CallableSemantics semantics = {})
     {
-        using traits = internal::signature_traits<Sig>;
         auto& entry = m_data->m_functions[std::string(name)];
-        if constexpr (traits::arity == 1)
-        {
-            internal::upsert_overload(entry.unary_overloads, internal::make_unary_overload<Sig>(std::forward<F>(function), semantics));
-        }
-        else if constexpr (traits::arity == 2)
-        {
-            internal::upsert_overload(entry.binary_overloads, internal::make_binary_overload<Sig>(std::forward<F>(function), semantics));
-        }
-        else
-        {
-            static_assert(internal::always_false_v<Sig>, "functions support arity 1 or 2 only");
-        }
+        internal::upsert_overload(
+            entry.fixed_overloads,
+            internal::make_function_overload<Sig>(std::forward<F>(function), semantics));
         return *this;
     }
     template <class F>
@@ -1300,14 +1290,28 @@ inline std::optional<FunctionInfo> MathContext::inspect_function(std::string_vie
 
     FunctionInfo info;
     info.name = std::string(name);
-    for (const auto& overload : entry->unary_overloads)
+    for (const auto& overload : entry->fixed_overloads)
     {
-        info.unary_overloads.push_back(UnaryOverloadInfo{overload.result_type, overload.argument_type, overload.semantics});
-    }
-    for (const auto& overload : entry->binary_overloads)
-    {
-        info.binary_overloads.push_back(
-            BinaryOverloadInfo{overload.result_type, overload.left_type, overload.right_type, overload.semantics});
+        info.fixed_overloads.push_back(FunctionOverloadInfo{
+            overload.result_type,
+            overload.argument_types,
+            overload.semantics,
+        });
+
+        if (overload.argument_types.size() == 1)
+        {
+            info.unary_overloads.push_back(
+                UnaryOverloadInfo{overload.result_type, overload.argument_types.front(), overload.semantics});
+        }
+        else if (overload.argument_types.size() == 2)
+        {
+            info.binary_overloads.push_back(BinaryOverloadInfo{
+                overload.result_type,
+                overload.argument_types[0],
+                overload.argument_types[1],
+                overload.semantics,
+            });
+        }
     }
     for (const auto& overload : entry->variadic_overloads)
     {
