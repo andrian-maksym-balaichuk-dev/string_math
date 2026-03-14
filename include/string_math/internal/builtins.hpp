@@ -1,16 +1,16 @@
 #pragma once
+// Do not include this file directly. Use <string_math/string_math.hpp> or individual public headers.
 
+#include <cmath>
+#include <stdexcept>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#include <string_math/context.hpp>
+#include <string_math/context/static_context.hpp>
 
-namespace string_math
-{
-
-namespace detail
+namespace string_math::internal
 {
 
 constexpr bool builtin_truthy(const MathValue& value) noexcept
@@ -144,11 +144,11 @@ inline MathValue builtin_postfix_factorial(const MathValue& value)
         using value_t = std::decay_t<decltype(current)>;
         if constexpr (std::is_floating_point_v<value_t>)
         {
-            return MathValue(detail::factorial_value(current));
+            return MathValue(factorial_value(current));
         }
         else
         {
-            return MathValue(static_cast<value_t>(detail::factorial_value(static_cast<long double>(current))));
+            return MathValue(static_cast<value_t>(factorial_value(static_cast<long double>(current))));
         }
     });
 }
@@ -575,33 +575,36 @@ constexpr auto register_builtin_value(
 }
 #endif
 
-} // namespace detail
+} // namespace string_math::internal
+
+namespace string_math
+{
 
 template <class Context>
 constexpr auto add_builtin_constants(Context context)
 {
-    const auto c01 = detail::register_builtin_value(std::move(context), "PI", MathValue(3.14159265358979323846));
-    return detail::register_builtin_value(std::move(c01), "E", MathValue(2.71828182845904523536));
+    const auto c01 = internal::register_builtin_value(std::move(context), "PI", MathValue(3.14159265358979323846));
+    return internal::register_builtin_value(std::move(c01), "E", MathValue(2.71828182845904523536));
 }
 
 template <class Context = MathContext>
 constexpr auto with_builtins(Context context = {})
 {
-    const auto c01 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c01 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(context),
         "+",
         [](auto left, auto right) { return left + right; },
         Precedence::Additive,
         Associativity::Left,
         OperatorSemantics::arithmetic_add());
-    const auto c02 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c02 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c01),
         "-",
         [](auto left, auto right) { return left - right; },
         Precedence::Additive,
         Associativity::Left,
         OperatorSemantics::arithmetic_subtract());
-    const auto c03 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c03 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c02),
         "*",
         [](auto left, auto right) { return left * right; },
@@ -609,7 +612,7 @@ constexpr auto with_builtins(Context context = {})
         Associativity::Left,
         OperatorSemantics::arithmetic_multiply());
 
-    const auto c04 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c04 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c03),
         "/",
         [](auto left, auto right) {
@@ -623,7 +626,7 @@ constexpr auto with_builtins(Context context = {})
         Associativity::Left,
         OperatorSemantics::arithmetic_divide());
 
-    const auto c05 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c05 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c04),
         "%",
         [](auto left, auto right) {
@@ -645,84 +648,84 @@ constexpr auto with_builtins(Context context = {})
         Associativity::Left,
         OperatorSemantics::arithmetic_modulo());
 
-    const auto c06 = detail::register_builtin_infix<double, long double>(
+    const auto c06 = internal::register_builtin_infix<double, long double>(
         std::move(c05),
         "^",
         [](auto left, auto right) { return std::pow(left, right); },
         Precedence::Power,
         Associativity::Right,
         OperatorSemantics::power());
-    const auto c07 = detail::register_builtin_infix<double, long double>(
+    const auto c07 = internal::register_builtin_infix<double, long double>(
         std::move(c06),
         "log",
         [](auto base, auto value) { return std::log(value) / std::log(base); },
         Precedence::Power,
         Associativity::Left,
         OperatorSemantics::logarithm());
-    const auto c08 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c08 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c07),
         "==",
         [](auto left, auto right) { return left == right ? 1 : 0; },
         Precedence::Comparison,
         Associativity::Left,
         OperatorSemantics::comparison(ArithmeticKind::CompareEqual));
-    const auto c09 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c09 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c08),
         "!=",
         [](auto left, auto right) { return left != right ? 1 : 0; },
         Precedence::Comparison,
         Associativity::Left,
         OperatorSemantics::comparison(ArithmeticKind::CompareNotEqual));
-    const auto c10 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c10 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c09),
         "<",
         [](auto left, auto right) { return left < right ? 1 : 0; },
         Precedence::Comparison,
         Associativity::Left,
         OperatorSemantics::comparison(ArithmeticKind::CompareLess));
-    const auto c11 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c11 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c10),
         "<=",
         [](auto left, auto right) { return left <= right ? 1 : 0; },
         Precedence::Comparison,
         Associativity::Left,
         OperatorSemantics::comparison(ArithmeticKind::CompareLessEqual));
-    const auto c12 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c12 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c11),
         ">",
         [](auto left, auto right) { return left > right ? 1 : 0; },
         Precedence::Comparison,
         Associativity::Left,
         OperatorSemantics::comparison(ArithmeticKind::CompareGreater));
-    const auto c13 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c13 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c12),
         ">=",
         [](auto left, auto right) { return left >= right ? 1 : 0; },
         Precedence::Comparison,
         Associativity::Left,
         OperatorSemantics::comparison(ArithmeticKind::CompareGreaterEqual));
-    const auto c14 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c14 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c13),
         "&&",
         [](auto left, auto right) { return (left != 0 && right != 0) ? 1 : 0; },
         Precedence::LogicalAnd,
         Associativity::Left,
         OperatorSemantics::logical_and_op());
-    const auto c15 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c15 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c14),
         "||",
         [](auto left, auto right) { return (left != 0 || right != 0) ? 1 : 0; },
         Precedence::LogicalOr,
         Associativity::Left,
         OperatorSemantics::logical_or_op());
-    const auto c16 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c16 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c15),
         "max",
         [](auto left, auto right) { return std::max(left, right); },
         Precedence::Power,
         Associativity::Left,
         OperatorSemantics::max_op());
-    const auto c17 = detail::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c17 = internal::register_builtin_infix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c16),
         "min",
         [](auto left, auto right) { return std::min(left, right); },
@@ -730,63 +733,63 @@ constexpr auto with_builtins(Context context = {})
         Associativity::Left,
         OperatorSemantics::min_op());
 
-    const auto c18 = detail::register_builtin_prefix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c18 = internal::register_builtin_prefix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c17), "+", [](auto value) { return value; }, Precedence::Prefix, OperatorSemantics::identity());
-    const auto c19 = detail::register_builtin_prefix<STRING_MATH_SIGNED_AND_FLOATING_VALUE_TYPES>(
+    const auto c19 = internal::register_builtin_prefix<STRING_MATH_SIGNED_AND_FLOATING_VALUE_TYPES>(
         std::move(c18), "-", [](auto value) { return -value; }, Precedence::Prefix, OperatorSemantics::negate());
-    const auto c20 = detail::register_builtin_prefix<STRING_MATH_ALL_VALUE_TYPES>(
+    const auto c20 = internal::register_builtin_prefix<STRING_MATH_ALL_VALUE_TYPES>(
         std::move(c19), "!", [](auto value) { return value == 0 ? 1 : 0; }, Precedence::Prefix, OperatorSemantics::logical_not_op());
-    const auto c21 = detail::register_builtin_postfix_overloads<STRING_MATH_SIGNED_FACTORIAL_SIGNATURES, STRING_MATH_UNSIGNED_FACTORIAL_SIGNATURES>(
+    const auto c21 = internal::register_builtin_postfix_overloads<STRING_MATH_SIGNED_FACTORIAL_SIGNATURES, STRING_MATH_UNSIGNED_FACTORIAL_SIGNATURES>(
         std::move(c20),
         "!",
         [](auto value) {
             using value_t = std::decay_t<decltype(value)>;
-            return static_cast<value_t>(detail::factorial_value(static_cast<long double>(value)));
+            return static_cast<value_t>(internal::factorial_value(static_cast<long double>(value)));
         },
         Precedence::Postfix,
         OperatorSemantics::factorial());
-    const auto c22 = detail::register_builtin_postfix<double, long double>(
+    const auto c22 = internal::register_builtin_postfix<double, long double>(
         std::move(c21),
         "!",
-        [](auto value) { return detail::factorial_value(value); },
+        [](auto value) { return internal::factorial_value(value); },
         Precedence::Postfix,
         OperatorSemantics::factorial());
 
-    const auto c23 = detail::register_builtin_function<float, double, long double>(
+    const auto c23 = internal::register_builtin_function<float, double, long double>(
         std::move(c22), "sin", [](auto value) { return std::sin(value); }, FunctionSemantics::pure());
-    const auto c24 = detail::register_builtin_function<float, double, long double>(
+    const auto c24 = internal::register_builtin_function<float, double, long double>(
         std::move(c23), "cos", [](auto value) { return std::cos(value); }, FunctionSemantics::pure());
-    const auto c25 = detail::register_builtin_function<float, double, long double>(
+    const auto c25 = internal::register_builtin_function<float, double, long double>(
         std::move(c24), "tan", [](auto value) { return std::tan(value); }, FunctionSemantics::pure());
-    const auto c26 = detail::register_builtin_function<float, double, long double>(
+    const auto c26 = internal::register_builtin_function<float, double, long double>(
         std::move(c25), "asin", [](auto value) { return std::asin(value); }, FunctionSemantics::pure());
-    const auto c27 = detail::register_builtin_function<float, double, long double>(
+    const auto c27 = internal::register_builtin_function<float, double, long double>(
         std::move(c26), "acos", [](auto value) { return std::acos(value); }, FunctionSemantics::pure());
-    const auto c28 = detail::register_builtin_function<float, double, long double>(
+    const auto c28 = internal::register_builtin_function<float, double, long double>(
         std::move(c27), "atan", [](auto value) { return std::atan(value); }, FunctionSemantics::pure());
-    const auto c29 = detail::register_builtin_function<float, double, long double>(
+    const auto c29 = internal::register_builtin_function<float, double, long double>(
         std::move(c28), "sqrt", [](auto value) { return std::sqrt(value); }, FunctionSemantics::pure());
-    const auto c30 = detail::register_builtin_function<float, double, long double>(
+    const auto c30 = internal::register_builtin_function<float, double, long double>(
         std::move(c29), "ceil", [](auto value) { return std::ceil(value); }, FunctionSemantics::pure());
-    const auto c31 = detail::register_builtin_function<float, double, long double>(
+    const auto c31 = internal::register_builtin_function<float, double, long double>(
         std::move(c30), "floor", [](auto value) { return std::floor(value); }, FunctionSemantics::pure());
-    const auto c32 = detail::register_builtin_function<float, double, long double>(
+    const auto c32 = internal::register_builtin_function<float, double, long double>(
         std::move(c31), "round", [](auto value) { return std::round(value); }, FunctionSemantics::pure());
-    const auto c33 = detail::register_builtin_function<float, double, long double>(
+    const auto c33 = internal::register_builtin_function<float, double, long double>(
         std::move(c32), "exp", [](auto value) { return std::exp(value); }, FunctionSemantics::pure());
-    const auto c34 = detail::register_builtin_function<STRING_MATH_SIGNED_AND_FLOATING_VALUE_TYPES>(
+    const auto c34 = internal::register_builtin_function<STRING_MATH_SIGNED_AND_FLOATING_VALUE_TYPES>(
         std::move(c33), "abs", [](auto value) { return std::abs(value); }, FunctionSemantics::pure());
-    const auto c35 = detail::register_builtin_function_signature<double(double)>(
+    const auto c35 = internal::register_builtin_function_signature<double(double)>(
         std::move(c34),
         "rad",
         [](double value) { return value * (3.14159265358979323846 / 180.0); },
         FunctionSemantics::pure());
-    const auto c36 = detail::register_builtin_function_signature<double(double)>(
+    const auto c36 = internal::register_builtin_function_signature<double(double)>(
         std::move(c35),
         "deg",
         [](double value) { return value * (180.0 / 3.14159265358979323846); },
         FunctionSemantics::pure());
-    const auto c37 = detail::register_builtin_variadic_function(
+    const auto c37 = internal::register_builtin_variadic_function(
         std::move(c36),
         "max",
         1,
@@ -802,7 +805,7 @@ constexpr auto with_builtins(Context context = {})
             return current;
         },
         FunctionSemantics::pure());
-    const auto c38 = detail::register_builtin_variadic_function(
+    const auto c38 = internal::register_builtin_variadic_function(
         std::move(c37),
         "min",
         1,
@@ -818,9 +821,9 @@ constexpr auto with_builtins(Context context = {})
             return current;
         },
         FunctionSemantics::pure());
-    const auto c39 = detail::register_builtin_prefix<STRING_MATH_SIGNED_AND_FLOATING_VALUE_TYPES>(
+    const auto c39 = internal::register_builtin_prefix<STRING_MATH_SIGNED_AND_FLOATING_VALUE_TYPES>(
         std::move(c38), "abs", [](auto value) { return std::abs(value); }, Precedence::Prefix, FunctionSemantics::pure());
-    const auto c40 = detail::register_builtin_prefix<float, double, long double>(
+    const auto c40 = internal::register_builtin_prefix<float, double, long double>(
         std::move(c39), "sqrt", [](auto value) { return std::sqrt(value); }, Precedence::Prefix, FunctionSemantics::pure());
     return add_builtin_constants(std::move(c40));
 }

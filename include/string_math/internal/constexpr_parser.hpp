@@ -1,10 +1,10 @@
 #pragma once
+// Do not include this file directly. Use <string_math/string_math.hpp> or individual public headers.
 
-#include <string_math/detail/builtins.hpp>
-#include <string_math/detail/fixed_string.hpp>
-#include <string_math/value.hpp>
+#include <string_math/internal/builtins.hpp>
+#include <string_math/value/value.hpp>
 
-namespace string_math::detail
+namespace string_math::internal
 {
 
 template <class Context = void>
@@ -624,4 +624,4 @@ private:
     const Context* m_context{ nullptr };
 };
 
-} // namespace string_math::detail
+} // namespace string_math::internal

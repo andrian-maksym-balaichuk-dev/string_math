@@ -1,17 +1,21 @@
 #pragma once
+// Do not include this file directly. Use <string_math/string_math.hpp> or individual public headers.
 
+#include <algorithm>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#include <string_math/policy.hpp>
-#include <string_math/result.hpp>
-#include <string_math/semantics.hpp>
-#include <string_math/value.hpp>
+#include <string_math/internal/arithmetic.hpp>
+#include <string_math/internal/type_conversion.hpp>
+#include <string_math/value/value.hpp>
+#include <string_math/value/policy.hpp>
+#include <string_math/semantics/semantics.hpp>
 
-namespace string_math::detail
+namespace string_math::internal
 {
 
 struct UnaryOverload
@@ -243,7 +247,7 @@ inline Result<const BinaryOverload*> try_resolve_binary_overload(
     const BinaryOverload* best = nullptr;
     int best_cost = std::numeric_limits<int>::max();
     bool ambiguous = false;
-    const ValueType preferred_target = preferred_binary_target(left_type, right_type, policy);
+    const ValueType preferred_target = preferred_binary_target(left_type, right_type);
 
     for (const auto& overload : overloads)
     {
@@ -302,94 +306,6 @@ resolve_binary_overload(
     PromotionPolicy policy = PromotionPolicy::CppLike)
 {
     return *try_resolve_binary_overload(overloads, left_type, right_type, symbol, policy).value();
-}
-
-inline long double factorial_value(long double value)
-{
-    if (value < 0.0L)
-    {
-        throw std::domain_error("string_math: factorial requires a non-negative value");
-    }
-
-    const long double rounded = std::round(value);
-    if (std::fabs(static_cast<double>(rounded - value)) > 1.0e-9)
-    {
-        throw std::domain_error("string_math: factorial requires an integral value");
-    }
-
-    long double result = 1.0L;
-    for (long long index = 2; index <= static_cast<long long>(rounded); ++index)
-    {
-        result *= static_cast<long double>(index);
-    }
-    return result;
-}
-
-template <class T>
-constexpr bool m_add_overflow(T left, T right, T& output)
-{
-    if constexpr (std::is_unsigned_v<T>)
-    {
-        output = static_cast<T>(left + right);
-        return output < left;
-    }
-    else
-    {
-        if ((right > 0 && left > std::numeric_limits<T>::max() - right) ||
-            (right < 0 && left < std::numeric_limits<T>::lowest() - right))
-        {
-            return true;
-        }
-        output = static_cast<T>(left + right);
-        return false;
-    }
-}
-
-template <class T>
-constexpr bool m_sub_overflow(T left, T right, T& output)
-{
-    if constexpr (std::is_unsigned_v<T>)
-    {
-        output = static_cast<T>(left - right);
-        return left < right;
-    }
-    else
-    {
-        if ((right < 0 && left > std::numeric_limits<T>::max() + right) ||
-            (right > 0 && left < std::numeric_limits<T>::lowest() + right))
-        {
-            return true;
-        }
-        output = static_cast<T>(left - right);
-        return false;
-    }
-}
-
-template <class T>
-inline bool m_mul_overflow(T left, T right, T& output)
-{
-    const long double product = static_cast<long double>(left) * static_cast<long double>(right);
-    if (product < static_cast<long double>(std::numeric_limits<T>::lowest()) ||
-        product > static_cast<long double>(std::numeric_limits<T>::max()))
-    {
-        return true;
-    }
-    output = static_cast<T>(left * right);
-    return false;
-}
-
-template <class T>
-constexpr T m_saturate_cast(long double value)
-{
-    if (value < static_cast<long double>(std::numeric_limits<T>::lowest()))
-    {
-        return std::numeric_limits<T>::lowest();
-    }
-    if (value > static_cast<long double>(std::numeric_limits<T>::max()))
-    {
-        return std::numeric_limits<T>::max();
-    }
-    return static_cast<T>(value);
 }
 
 template <class T>
@@ -511,4 +427,20 @@ inline Result<MathValue> invoke_binary_overload(
     return Error(ErrorKind::Internal, "string_math: unsupported binary overload result type", {}, std::string(token));
 }
 
-} // namespace string_math::detail
+template <class T, class F>
+struct unary_signature_for
+{
+    using result_type = std::remove_cv_t<std::remove_reference_t<std::invoke_result_t<F&, T>>>;
+    static_assert(is_supported_value_type_v<result_type>, "unsupported unary helper result type");
+    using type = result_type(T);
+};
+
+template <class T, class F>
+struct binary_signature_for
+{
+    using result_type = std::remove_cv_t<std::remove_reference_t<std::invoke_result_t<F&, T, T>>>;
+    static_assert(is_supported_value_type_v<result_type>, "unsupported binary helper result type");
+    using type = result_type(T, T);
+};
+
+} // namespace string_math::internal

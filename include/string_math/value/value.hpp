@@ -1,12 +1,17 @@
 #pragma once
 
 #include <cmath>
+#include <limits>
 #include <ostream>
+#include <sstream>
+#include <stdexcept>
+#include <variant>
 
-#include <string_math/detail/base.hpp>
-#include <string_math/policy.hpp>
-#include <string_math/result.hpp>
-#include <string_math/traits.hpp>
+#include <string_math/internal/config.hpp>
+#include <string_math/internal/type_conversion.hpp>
+#include <string_math/value/policy.hpp>
+#include <string_math/diagnostics/result.hpp>
+#include <string_math/value/traits.hpp>
 
 namespace string_math
 {
@@ -19,7 +24,7 @@ public:
     constexpr MathValue() : m_value(0) {}
 
     template <class T, std::enable_if_t<has_value_traits_v<T>, int> = 0>
-    constexpr MathValue(T value) : m_value(ValueTraits<detail::remove_cvref_t<T>>::to_storage(value))
+    constexpr MathValue(T value) : m_value(ValueTraits<internal::remove_cvref_t<T>>::to_storage(value))
     {}
 
     constexpr ValueType type() const noexcept
@@ -30,31 +35,31 @@ public:
     template <class T>
     constexpr bool is() const noexcept
     {
-        static_assert(has_value_traits_v<T> || detail::is_supported_value_type_v<T>, "unsupported value type");
+        static_assert(has_value_traits_v<T> || internal::is_supported_value_type_v<T>, "unsupported value type");
         using storage_t = std::conditional_t<
             has_value_traits_v<T>,
-            typename ValueTraits<detail::remove_cvref_t<T>>::value_type,
-            detail::canonical_storage_type_t<T>>;
+            typename ValueTraits<internal::remove_cvref_t<T>>::value_type,
+            internal::canonical_storage_type_t<T>>;
         return std::holds_alternative<storage_t>(m_value);
     }
 
     template <class T>
     constexpr T get() const
     {
-        static_assert(detail::is_supported_value_type_v<T>, "unsupported value type");
+        static_assert(internal::is_supported_value_type_v<T>, "unsupported value type");
         return cast<T>();
     }
 
     template <class T>
     constexpr T cast() const
     {
-        static_assert(has_value_traits_v<T> || detail::is_supported_value_type_v<T>, "unsupported value type");
+        static_assert(has_value_traits_v<T> || internal::is_supported_value_type_v<T>, "unsupported value type");
         return std::visit(
             [](const auto& value) -> T {
                 if constexpr (has_value_traits_v<T>)
                 {
-                    using storage_t = typename ValueTraits<detail::remove_cvref_t<T>>::value_type;
-                    return ValueTraits<detail::remove_cvref_t<T>>::from_storage(static_cast<storage_t>(value));
+                    using storage_t = typename ValueTraits<internal::remove_cvref_t<T>>::value_type;
+                    return ValueTraits<internal::remove_cvref_t<T>>::from_storage(static_cast<storage_t>(value));
                 }
                 else
                 {
@@ -161,7 +166,7 @@ inline T cast_value(const MathValue& value, NarrowingPolicy policy = NarrowingPo
     return converted;
 }
 
-namespace detail
+namespace internal
 {
 
 template <class T>
@@ -265,11 +270,11 @@ constexpr bool apply_compare_value_operation(const MathValue& left, const MathVa
     });
 }
 
-} // namespace detail
+} // namespace internal
 
 constexpr bool operator==(const MathValue& left, const MathValue& right)
 {
-    return detail::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs == rhs; });
+    return internal::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs == rhs; });
 }
 
 constexpr bool operator!=(const MathValue& left, const MathValue& right)
@@ -279,22 +284,22 @@ constexpr bool operator!=(const MathValue& left, const MathValue& right)
 
 constexpr bool operator<(const MathValue& left, const MathValue& right)
 {
-    return detail::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs < rhs; });
+    return internal::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs < rhs; });
 }
 
 constexpr bool operator<=(const MathValue& left, const MathValue& right)
 {
-    return detail::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs <= rhs; });
+    return internal::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs <= rhs; });
 }
 
 constexpr bool operator>(const MathValue& left, const MathValue& right)
 {
-    return detail::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs > rhs; });
+    return internal::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs > rhs; });
 }
 
 constexpr bool operator>=(const MathValue& left, const MathValue& right)
 {
-    return detail::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs >= rhs; });
+    return internal::apply_compare_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs >= rhs; });
 }
 
 template <class T, std::enable_if_t<std::is_arithmetic_v<T>, int> = 0>
@@ -326,7 +331,7 @@ constexpr bool operator!=(T left, const MathValue& right)
 
 constexpr MathValue operator+(const MathValue& left, const MathValue& right)
 {
-    return detail::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs + rhs; });
+    return internal::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs + rhs; });
 }
 
 constexpr MathValue operator+(const MathValue& value)
@@ -336,7 +341,7 @@ constexpr MathValue operator+(const MathValue& value)
 
 constexpr MathValue operator-(const MathValue& left, const MathValue& right)
 {
-    return detail::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs - rhs; });
+    return internal::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs - rhs; });
 }
 
 constexpr MathValue operator-(const MathValue& value)
@@ -346,12 +351,12 @@ constexpr MathValue operator-(const MathValue& value)
 
 constexpr MathValue operator*(const MathValue& left, const MathValue& right)
 {
-    return detail::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs * rhs; });
+    return internal::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) { return lhs * rhs; });
 }
 
 constexpr MathValue operator/(const MathValue& left, const MathValue& right)
 {
-    return detail::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) {
+    return internal::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) {
         if (rhs == 0)
         {
             throw std::domain_error("string_math: division by zero");
@@ -362,10 +367,10 @@ constexpr MathValue operator/(const MathValue& left, const MathValue& right)
 
 constexpr MathValue operator%(const MathValue& left, const MathValue& right)
 {
-    const ValueType target = detail::preferred_binary_target(left.type(), right.type());
-    if (detail::is_integral(target))
+    const ValueType target = internal::preferred_binary_target(left.type(), right.type());
+    if (internal::is_integral(target))
     {
-        return detail::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) {
+        return internal::apply_binary_value_operation(left, right, [](const auto& lhs, const auto& rhs) {
             if (rhs == 0)
             {
                 throw std::domain_error("string_math: modulo by zero");

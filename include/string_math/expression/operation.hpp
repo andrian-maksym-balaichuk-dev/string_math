@@ -1,8 +1,12 @@
 #pragma once
 
 #include <functional>
+#include <set>
+#include <unordered_map>
 
-#include <string_math/context.hpp>
+#include <string_math/context/context.hpp>
+#include <string_math/internal/parser.hpp>
+#include <string_math/internal/overload_impl.hpp>
 
 namespace string_math
 {
@@ -12,42 +16,13 @@ struct ParsedOperation;
 struct BoundOperation;
 Result<Operation> try_create_operation(std::string_view expression, const MathContext& context);
 Result<MathValue> try_evaluate_operation(const Operation& operation, const MathContext& context);
+MathValue evaluate_operation(const Operation& operation, const MathContext& context);
 Result<ParsedOperation> try_parse_operation(std::string_view expression, const MathContext& context);
 Result<BoundOperation> try_bind_operation(const ParsedOperation& operation, FrozenMathContext context);
 Result<Operation> try_optimize_operation(const BoundOperation& operation);
 
-namespace detail
+namespace internal
 {
-
-struct Node
-{
-    enum class Kind
-    {
-        Literal,
-        Variable,
-        PrefixOperator,
-        PostfixOperator,
-        InfixOperator,
-        FunctionCall,
-        Conditional
-    };
-
-    Kind kind{Kind::Literal};
-    MathValue literal{};
-    std::string text;
-    int left{-1};
-    int right{-1};
-    int third{-1};
-    int arity{0};
-    std::vector<int> arguments;
-    SourceSpan span{};
-};
-
-struct ParsedText
-{
-    std::string text;
-    SourceSpan span{};
-};
 
 class Parser
 {
@@ -125,7 +100,7 @@ int fold_node(
     std::vector<Node>& optimized_nodes,
     std::unordered_map<int, int>& remapped_indices);
 
-} // namespace detail
+} // namespace internal
 
 class Operation
 {
@@ -138,7 +113,7 @@ public:
     }
 
 private:
-    friend class detail::Parser;
+    friend class internal::Parser;
     friend class Calculator;
     friend class MathExpr;
     friend Result<MathValue> try_evaluate_operation(const Operation& operation, const MathContext& context);
@@ -146,15 +121,15 @@ private:
     friend Result<ParsedOperation> try_parse_operation(std::string_view expression, const MathContext& context);
     friend Result<BoundOperation> try_bind_operation(const ParsedOperation& operation, FrozenMathContext context);
     friend Result<Operation> try_optimize_operation(const BoundOperation& operation);
-    friend Operation detail::make_subtree_operation(const Operation& source, const detail::Node& node, std::vector<detail::Node> child_nodes);
-    friend int detail::fold_node(
+    friend Operation internal::make_subtree_operation(const Operation& source, const internal::Node& node, std::vector<internal::Node> child_nodes);
+    friend int internal::fold_node(
         const Operation& source,
         const MathContext& context,
         int index,
-        std::vector<detail::Node>& optimized_nodes,
+        std::vector<internal::Node>& optimized_nodes,
         std::unordered_map<int, int>& remapped_indices);
 
-    std::vector<detail::Node> m_nodes;
+    std::vector<internal::Node> m_nodes;
     int m_root{-1};
     std::vector<std::string> m_variables;
 };
@@ -170,12 +145,16 @@ struct BoundOperation
     FrozenMathContext context;
 };
 
-inline Operation detail::Parser::parse()
+// ---------------------------------------------------------------------------
+// Parser method implementations
+// ---------------------------------------------------------------------------
+
+inline Operation internal::Parser::parse()
 {
     return try_parse().value();
 }
 
-inline Result<Operation> detail::Parser::try_parse()
+inline Result<Operation> internal::Parser::try_parse()
 {
     Operation operation;
     const auto root_result = m_parse_expression(0);
@@ -203,7 +182,7 @@ inline Result<Operation> detail::Parser::try_parse()
 
 inline Result<ParsedOperation> try_parse_operation(std::string_view expression, const MathContext& context)
 {
-    const auto operation_result = detail::Parser(expression, context).try_parse();
+    const auto operation_result = internal::Parser(expression, context).try_parse();
     if (!operation_result)
     {
         return operation_result.error();
@@ -217,7 +196,7 @@ inline Result<BoundOperation> try_bind_operation(const ParsedOperation& operatio
     return BoundOperation{operation.operation, std::move(context)};
 }
 
-inline Result<int> detail::Parser::m_parse_expression(int min_precedence)
+inline Result<int> internal::Parser::m_parse_expression(int min_precedence)
 {
     const auto left_result = m_parse_prefix_or_primary();
     if (!left_result)
@@ -243,8 +222,8 @@ inline Result<int> detail::Parser::m_parse_expression(int min_precedence)
             if (entry != nullptr && entry->precedence >= min_precedence)
             {
                 m_position += postfix.size();
-                left = m_add_node(detail::Node{
-                    detail::Node::Kind::PostfixOperator,
+                left = m_add_node(internal::Node{
+                    internal::Node::Kind::PostfixOperator,
                     {},
                     postfix,
                     left,
@@ -279,8 +258,8 @@ inline Result<int> detail::Parser::m_parse_expression(int min_precedence)
             return right_result.error();
         }
 
-        left = m_add_node(detail::Node{
-            detail::Node::Kind::InfixOperator,
+        left = m_add_node(internal::Node{
+            internal::Node::Kind::InfixOperator,
             {},
             infix,
             left,
@@ -321,8 +300,8 @@ inline Result<int> detail::Parser::m_parse_expression(int min_precedence)
             return false_result.error();
         }
 
-        left = m_add_node(detail::Node{
-            detail::Node::Kind::Conditional,
+        left = m_add_node(internal::Node{
+            internal::Node::Kind::Conditional,
             {},
             "?",
             left,
@@ -337,7 +316,7 @@ inline Result<int> detail::Parser::m_parse_expression(int min_precedence)
     return left;
 }
 
-inline Result<int> detail::Parser::m_parse_prefix_or_primary()
+inline Result<int> internal::Parser::m_parse_prefix_or_primary()
 {
     m_skip_spaces();
     if (m_position >= m_expression.size())
@@ -365,8 +344,8 @@ inline Result<int> detail::Parser::m_parse_prefix_or_primary()
                 return operand_result.error();
             }
 
-            return m_add_node(detail::Node{
-                detail::Node::Kind::PrefixOperator,
+            return m_add_node(internal::Node{
+                internal::Node::Kind::PrefixOperator,
                 {},
                 symbol,
                 operand_result.value(),
@@ -382,7 +361,7 @@ inline Result<int> detail::Parser::m_parse_prefix_or_primary()
     return m_parse_primary();
 }
 
-inline Result<int> detail::Parser::m_parse_primary()
+inline Result<int> internal::Parser::m_parse_primary()
 {
     m_skip_spaces();
     if (m_position >= m_expression.size())
@@ -433,8 +412,8 @@ inline Result<int> detail::Parser::m_parse_primary()
 
         const auto& variable = variable_result.value();
         m_variable_names.insert(variable.text);
-        return m_add_node(detail::Node{
-            detail::Node::Kind::Variable,
+        return m_add_node(internal::Node{
+            internal::Node::Kind::Variable,
             {},
             variable.text,
             -1,
@@ -446,9 +425,9 @@ inline Result<int> detail::Parser::m_parse_primary()
         });
     }
 
-    if (detail::is_identifier_start(m_expression[m_position]))
+    if (internal::is_identifier_start(m_expression[m_position]))
     {
-        const ParsedText identifier = m_parse_identifier();
+        const internal::ParsedText identifier = m_parse_identifier();
         m_skip_spaces();
         if (m_position < m_expression.size() && m_expression[m_position] == '(')
         {
@@ -463,8 +442,8 @@ inline Result<int> detail::Parser::m_parse_primary()
                 return argument_result.error();
             }
 
-            return m_add_node(detail::Node{
-                detail::Node::Kind::FunctionCall,
+            return m_add_node(internal::Node{
+                internal::Node::Kind::FunctionCall,
                 {},
                 identifier.text,
                 argument_result.value(),
@@ -485,15 +464,15 @@ inline Result<int> detail::Parser::m_parse_primary()
 
     if (m_looks_like_literal_start())
     {
-        const ParsedText token = m_parse_literal_token();
+        const internal::ParsedText token = m_parse_literal_token();
         const auto literal_result = try_parse_literal(token.text, m_context, token.span);
         if (!literal_result)
         {
             return literal_result.error();
         }
 
-        return m_add_node(detail::Node{
-            detail::Node::Kind::Literal,
+        return m_add_node(internal::Node{
+            internal::Node::Kind::Literal,
             literal_result.value(),
             {},
             -1,
@@ -514,7 +493,7 @@ inline Result<int> detail::Parser::m_parse_primary()
         {"primary expression"});
 }
 
-inline Result<int> detail::Parser::m_parse_function_call(ParsedText name)
+inline Result<int> internal::Parser::m_parse_function_call(internal::ParsedText name)
 {
     ++m_position;
     m_skip_spaces();
@@ -554,8 +533,8 @@ inline Result<int> detail::Parser::m_parse_function_call(ParsedText name)
     }
 
     ++m_position;
-    return m_add_node(detail::Node{
-        detail::Node::Kind::FunctionCall,
+    return m_add_node(internal::Node{
+        internal::Node::Kind::FunctionCall,
         {},
         std::move(name.text),
         arguments.empty() ? -1 : arguments.front(),
@@ -567,21 +546,21 @@ inline Result<int> detail::Parser::m_parse_function_call(ParsedText name)
     });
 }
 
-inline detail::ParsedText detail::Parser::m_parse_identifier()
+inline internal::ParsedText internal::Parser::m_parse_identifier()
 {
     const std::size_t begin = m_position++;
-    while (m_position < m_expression.size() && detail::is_identifier_char(m_expression[m_position]))
+    while (m_position < m_expression.size() && internal::is_identifier_char(m_expression[m_position]))
     {
         ++m_position;
     }
 
-    return ParsedText{
+    return internal::ParsedText{
         std::string(m_expression.substr(begin, m_position - begin)),
         SourceSpan{begin, m_position},
     };
 }
 
-inline Result<detail::ParsedText> detail::Parser::m_parse_variable_name(std::size_t open_brace_position)
+inline Result<internal::ParsedText> internal::Parser::m_parse_variable_name(std::size_t open_brace_position)
 {
     const std::size_t begin = m_position;
     while (m_position < m_expression.size() && m_expression[m_position] != '}')
@@ -600,8 +579,8 @@ inline Result<detail::ParsedText> detail::Parser::m_parse_variable_name(std::siz
             {"}"});
     }
 
-    ParsedText text{
-        std::string(detail::trim(m_expression.substr(begin, m_position - begin))),
+    internal::ParsedText text{
+        std::string(internal::trim(m_expression.substr(begin, m_position - begin))),
         SourceSpan{open_brace_position, m_position + 1},
     };
     ++m_position;
@@ -618,19 +597,19 @@ inline Result<detail::ParsedText> detail::Parser::m_parse_variable_name(std::siz
     return text;
 }
 
-inline bool detail::Parser::m_looks_like_literal_start() const noexcept
+inline bool internal::Parser::m_looks_like_literal_start() const noexcept
 {
     const char ch = m_expression[m_position];
-    return detail::is_digit(ch) || ch == '.';
+    return internal::is_digit(ch) || ch == '.';
 }
 
-inline detail::ParsedText detail::Parser::m_parse_literal_token()
+inline internal::ParsedText internal::Parser::m_parse_literal_token()
 {
     const std::size_t begin = m_position;
     while (m_position < m_expression.size())
     {
         const char ch = m_expression[m_position];
-        if (detail::is_space(ch) || ch == ')' || ch == ',' || ch == '{' || ch == '}')
+        if (internal::is_space(ch) || ch == ')' || ch == ',' || ch == '{' || ch == '}')
         {
             break;
         }
@@ -641,7 +620,7 @@ inline detail::ParsedText detail::Parser::m_parse_literal_token()
         {
             const char previous = m_expression[m_position - 1];
             const bool signed_exponent = (ch == '+' || ch == '-') && (previous == 'e' || previous == 'E');
-            const bool literal_alpha = detail::is_identifier_char(ch) || ch == '.';
+            const bool literal_alpha = internal::is_identifier_char(ch) || ch == '.';
             if (!signed_exponent && !literal_alpha)
             {
                 break;
@@ -651,13 +630,17 @@ inline detail::ParsedText detail::Parser::m_parse_literal_token()
         ++m_position;
     }
 
-    return ParsedText{
+    return internal::ParsedText{
         std::string(m_expression.substr(begin, m_position - begin)),
         SourceSpan{begin, m_position},
     };
 }
 
-namespace detail
+// ---------------------------------------------------------------------------
+// Optimizer (constant folding)
+// ---------------------------------------------------------------------------
+
+namespace internal
 {
 
 inline bool has_foldable_prefix(const MathContext& context, std::string_view symbol)
@@ -837,13 +820,13 @@ inline int fold_node(
     return optimized_index;
 }
 
-} // namespace detail
+} // namespace internal
 
 inline Result<Operation> try_optimize_operation(const BoundOperation& operation)
 {
     Operation optimized;
     std::unordered_map<int, int> remapped_indices;
-    optimized.m_root = detail::fold_node(
+    optimized.m_root = internal::fold_node(
         operation.operation,
         operation.context.context(),
         operation.operation.m_root,
@@ -875,6 +858,10 @@ inline Operation create_operation(std::string_view expression, const MathContext
     return try_create_operation(expression, context).value();
 }
 
+// ---------------------------------------------------------------------------
+// Evaluator
+// ---------------------------------------------------------------------------
+
 inline Result<MathValue> try_evaluate_operation(const Operation& operation, const MathContext& context)
 {
     const auto is_truthy = [](const MathValue& value) {
@@ -885,10 +872,10 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
         const auto& node = operation.m_nodes.at(static_cast<std::size_t>(index));
         switch (node.kind)
         {
-        case detail::Node::Kind::Literal:
+        case internal::Node::Kind::Literal:
             return node.literal;
 
-        case detail::Node::Kind::Variable: {
+        case internal::Node::Kind::Variable: {
             const auto value = context.find_value(node.text);
             if (!value)
             {
@@ -901,7 +888,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
             return *value;
         }
 
-        case detail::Node::Kind::PrefixOperator: {
+        case internal::Node::Kind::PrefixOperator: {
             const auto operand_result = evaluate_node(node.left);
             if (!operand_result)
             {
@@ -918,7 +905,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                     node.text);
             }
 
-            const auto overload_result = detail::try_resolve_unary_overload(entry->overloads, operand_result.value().type(), node.text);
+            const auto overload_result = internal::try_resolve_unary_overload(entry->overloads, operand_result.value().type(), node.text);
             if (!overload_result)
             {
                 return Error(overload_result.error().kind(), overload_result.error().message(), node.span, node.text);
@@ -926,7 +913,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
             try
             {
-                return detail::invoke_unary_overload(*overload_result.value(), operand_result.value());
+                return internal::invoke_unary_overload(*overload_result.value(), operand_result.value());
             }
             catch (const std::exception& error)
             {
@@ -934,7 +921,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
             }
         }
 
-        case detail::Node::Kind::PostfixOperator: {
+        case internal::Node::Kind::PostfixOperator: {
             const auto operand_result = evaluate_node(node.left);
             if (!operand_result)
             {
@@ -951,7 +938,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                     node.text);
             }
 
-            const auto overload_result = detail::try_resolve_unary_overload(entry->overloads, operand_result.value().type(), node.text);
+            const auto overload_result = internal::try_resolve_unary_overload(entry->overloads, operand_result.value().type(), node.text);
             if (!overload_result)
             {
                 return Error(overload_result.error().kind(), overload_result.error().message(), node.span, node.text);
@@ -959,7 +946,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
             try
             {
-                return detail::invoke_unary_overload(*overload_result.value(), operand_result.value());
+                return internal::invoke_unary_overload(*overload_result.value(), operand_result.value());
             }
             catch (const std::exception& error)
             {
@@ -967,7 +954,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
             }
         }
 
-        case detail::Node::Kind::InfixOperator: {
+        case internal::Node::Kind::InfixOperator: {
             const auto left_result = evaluate_node(node.left);
             if (!left_result)
             {
@@ -990,7 +977,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                     node.text);
             }
 
-            const auto overload_result = detail::try_resolve_binary_overload(
+            const auto overload_result = internal::try_resolve_binary_overload(
                 entry->overloads,
                 left_result.value().type(),
                 right_result.value().type(),
@@ -1003,7 +990,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
             try
             {
-                return detail::invoke_binary_overload(
+                return internal::invoke_binary_overload(
                     *overload_result.value(),
                     left_result.value(),
                     right_result.value(),
@@ -1016,7 +1003,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
             }
         }
 
-        case detail::Node::Kind::FunctionCall: {
+        case internal::Node::Kind::FunctionCall: {
             const auto* entry = context.find_function(node.text);
             if (entry == nullptr)
             {
@@ -1036,7 +1023,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                 }
 
                 const auto overload_result =
-                    detail::try_resolve_unary_overload(entry->unary_overloads, argument_result.value().type(), node.text);
+                    internal::try_resolve_unary_overload(entry->unary_overloads, argument_result.value().type(), node.text);
                 if (!overload_result)
                 {
                     return Error(overload_result.error().kind(), overload_result.error().message(), node.span, node.text);
@@ -1044,7 +1031,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
                 try
                 {
-                    return detail::invoke_unary_overload(*overload_result.value(), argument_result.value());
+                    return internal::invoke_unary_overload(*overload_result.value(), argument_result.value());
                 }
                 catch (const std::exception& error)
                 {
@@ -1066,7 +1053,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                     return right_result.error();
                 }
 
-                const auto overload_result = detail::try_resolve_binary_overload(
+                const auto overload_result = internal::try_resolve_binary_overload(
                     entry->binary_overloads,
                     left_result.value().type(),
                     right_result.value().type(),
@@ -1079,7 +1066,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
                 try
                 {
-                    return detail::invoke_binary_overload(
+                    return internal::invoke_binary_overload(
                         *overload_result.value(),
                         left_result.value(),
                         right_result.value(),
@@ -1127,7 +1114,7 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
             return Error(ErrorKind::Evaluation, "string_math: unsupported function arity", node.span, node.text);
         }
 
-        case detail::Node::Kind::Conditional: {
+        case internal::Node::Kind::Conditional: {
             const auto condition_result = evaluate_node(node.left);
             if (!condition_result)
             {

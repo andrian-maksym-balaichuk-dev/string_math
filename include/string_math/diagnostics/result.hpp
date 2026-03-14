@@ -3,7 +3,7 @@
 #include <utility>
 #include <variant>
 
-#include <string_math/error.hpp>
+#include <string_math/diagnostics/error.hpp>
 
 namespace string_math
 {

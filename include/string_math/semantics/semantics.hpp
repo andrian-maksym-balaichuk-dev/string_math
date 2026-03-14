@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include <string_math/value/policy.hpp>
+
 namespace string_math
 {
 
@@ -29,14 +31,6 @@ enum class ArithmeticKind
     Negate,
     Identity,
     Factorial
-};
-
-enum class BinaryPolicyKind
-{
-    None,
-    IntegralAddOverflow,
-    IntegralSubtractOverflow,
-    IntegralMultiplyOverflow
 };
 
 enum class CallableFlag : std::uint32_t
