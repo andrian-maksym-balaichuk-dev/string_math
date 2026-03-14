@@ -1,11 +1,13 @@
 #pragma once
 
-#include <array>
+#include <memory>
+#include <optional>
 #include <set>
+#include <string_view>
+#include <vector>
 
 #include <string_math/internal/context_data.hpp>
 #include <string_math/internal/parser.hpp>
-#include <string_math/internal/static_context_data.hpp>
 #include <string_math/semantics/overload.hpp>
 #include <string_math/value/value.hpp>
 
@@ -51,22 +53,26 @@ public:
         copy.set_parent(parent);
         return copy;
     }
+
     bool remove_variable(std::string_view name);
     std::optional<MathValue> find_value(std::string_view name) const;
     FrozenMathContext snapshot() const;
     FrozenMathContext freeze() const;
     std::vector<std::string> variable_names() const;
+
     MathContext& set_policy(EvaluationPolicy policy)
     {
         m_data->m_policy = policy;
         return *this;
     }
+
     MathContext with_policy(EvaluationPolicy policy) const
     {
         MathContext copy(*this);
         copy.set_policy(policy);
         return copy;
     }
+
     const EvaluationPolicy& policy() const noexcept
     {
         return m_data->m_policy;
@@ -74,7 +80,9 @@ public:
 
     MathContext with_value(std::string_view name, MathValue value) const
     {
-        return detail_with_value(name, value);
+        MathContext copy(*this);
+        copy.detail_set_value(name, value);
+        return copy;
     }
 
     template <std::size_t NameSize, class T>
@@ -121,10 +129,11 @@ public:
     {
         auto& entry = m_data->m_functions[std::string(name)];
         internal::upsert_overload(
-            entry.fixed_overloads,
-            internal::make_function_overload<Sig>(std::forward<F>(function), semantics));
+            entry.overloads,
+            internal::make_fixed_callable_overload<Sig>(std::forward<F>(function), semantics));
         return *this;
     }
+
     template <class F>
     MathContext& add_function(std::string_view name, F&& function, CallableSemantics semantics = {})
     {
@@ -138,6 +147,7 @@ public:
         copy.template add_function<Sig>(name, std::forward<F>(function), semantics);
         return copy;
     }
+
     template <class F>
     MathContext with_function(std::string_view name, F&& function, CallableSemantics semantics = {}) const
     {
@@ -151,6 +161,7 @@ public:
     {
         return add_function<Sig>(name, std::forward<F>(function), semantics);
     }
+
     template <class F>
     MathContext& register_function(std::string_view name, F&& function, CallableSemantics semantics = {})
     {
@@ -161,25 +172,13 @@ public:
     template <class Sig, auto Function>
     MathContext& add_function(std::string_view name, CallableSemantics semantics = {})
     {
-        return detail_add_function_nttp<Sig, Function>(name, semantics);
+        return add_function<Sig>(name, Function, semantics);
     }
 
     template <auto Function>
     MathContext& add_function(std::string_view name, CallableSemantics semantics = {})
     {
         return add_function<fw::detail::fn_sig_t<decltype(Function)>, Function>(name, semantics);
-    }
-
-    template <class Sig, auto Function, std::size_t NameSize>
-    MathContext& add_function(const char (&name)[NameSize], CallableSemantics semantics = {})
-    {
-        return add_function<Sig, Function>(std::string_view(name, NameSize - 1), semantics);
-    }
-
-    template <auto Function, std::size_t NameSize>
-    MathContext& add_function(const char (&name)[NameSize], CallableSemantics semantics = {})
-    {
-        return add_function<Function>(std::string_view(name, NameSize - 1), semantics);
     }
 
     template <class Sig, auto Function>
@@ -207,14 +206,18 @@ public:
     MathContext& add_function_for(std::string_view name, F&& function, CallableSemantics semantics = {})
     {
         return add_function_overloads<typename internal::unary_signature_for<Ts, std::decay_t<F>>::type...>(
-            name, std::forward<F>(function), semantics);
+            name,
+            std::forward<F>(function),
+            semantics);
     }
 
     template <class... Ts, class F>
     MathContext& add_binary_function_for(std::string_view name, F&& function, CallableSemantics semantics = {})
     {
         return add_function_overloads<typename internal::binary_signature_for<Ts, std::decay_t<F>>::type...>(
-            name, std::forward<F>(function), semantics);
+            name,
+            std::forward<F>(function),
+            semantics);
     }
 
     template <class F>
@@ -224,18 +227,37 @@ public:
         F&& function,
         CallableSemantics semantics = {})
     {
-        using wrapper_t = fw::function_wrapper<MathValue(const std::vector<MathValue>&)>;
-        auto storage = std::make_shared<wrapper_t>(std::forward<F>(function));
         auto& entry = m_data->m_functions[std::string(name)];
-        entry.variadic_overloads.push_back(typename internal::FunctionEntry::VariadicOverload{
-            min_arity,
-            semantics,
-            storage,
-            [](const void* raw_storage, const std::vector<MathValue>& arguments) {
-                const auto& wrapper = *static_cast<const wrapper_t*>(raw_storage);
-                return wrapper(arguments);
-            },
-        });
+        internal::upsert_overload(
+            entry.overloads,
+            internal::make_variadic_callable_overload(min_arity, internal::k_unbounded_arity, std::forward<F>(function), semantics));
+        return *this;
+    }
+
+    MathContext& add_generic_function(
+        std::string_view name,
+        internal::callable_invoke_fn invoke,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        ValueType result_type = ValueType::Double,
+        CallableSemantics semantics = {},
+        internal::callable_policy_fn policy_invoke = nullptr)
+    {
+        auto& entry = m_data->m_functions[std::string(name)];
+        internal::upsert_overload(
+            entry.overloads,
+            internal::RuntimeCallableOverload{
+                result_type,
+                max_arity == internal::k_unbounded_arity ? internal::ArityKind::Variadic : internal::ArityKind::Fixed,
+                min_arity,
+                max_arity,
+                {},
+                semantics,
+                {},
+                invoke,
+                {},
+                policy_invoke,
+            });
         return *this;
     }
 
@@ -247,17 +269,11 @@ public:
         CallableSemantics semantics = {})
     {
         auto typed_function = std::decay_t<F>(std::forward<F>(function));
-        return add_variadic_function(
+        return detail_add_typed_variadic_function<T>(
             name,
             min_arity,
-            [typed_function](const std::vector<MathValue>& arguments) mutable -> MathValue {
-                std::vector<T> converted;
-                converted.reserve(arguments.size());
-                for (const auto& argument : arguments)
-                {
-                    converted.push_back(argument.template cast<T>());
-                }
-                return MathValue(typed_function(converted));
+            [typed_function](const std::vector<T>& arguments) mutable -> MathValue {
+                return MathValue(typed_function(arguments));
             },
             semantics);
     }
@@ -309,18 +325,45 @@ public:
     bool remove_function(std::string_view name);
 
     template <class Sig, class F>
-    MathContext&
-    add_prefix_operator(std::string_view symbol, F&& function, int precedence = Precedence::Prefix, CallableSemantics semantics = {})
+    MathContext& add_prefix_operator(std::string_view symbol, F&& function, int precedence, CallableSemantics semantics = {})
     {
         auto& entry = m_data->m_prefix_operators[std::string(symbol)];
         entry.precedence = precedence;
-        internal::upsert_overload(entry.overloads, internal::make_unary_overload<Sig>(std::forward<F>(function), semantics));
-        m_rebuild_symbol_cache();
+        internal::upsert_overload(
+            entry.overloads,
+            internal::make_fixed_callable_overload<Sig>(std::forward<F>(function), semantics));
         return *this;
     }
+
+    MathContext& add_generic_prefix_operator(
+        std::string_view symbol,
+        int precedence,
+        internal::callable_invoke_fn invoke,
+        ValueType result_type = ValueType::Double,
+        CallableSemantics semantics = {},
+        internal::callable_policy_fn policy_invoke = nullptr)
+    {
+        auto& entry = m_data->m_prefix_operators[std::string(symbol)];
+        entry.precedence = precedence;
+        internal::upsert_overload(
+            entry.overloads,
+            internal::RuntimeCallableOverload{
+                result_type,
+                internal::ArityKind::Fixed,
+                1,
+                1,
+                {},
+                semantics,
+                {},
+                invoke,
+                {},
+                policy_invoke,
+            });
+        return *this;
+    }
+
     template <class F>
-    MathContext&
-    add_prefix_operator(std::string_view symbol, F&& function, int precedence = Precedence::Prefix, CallableSemantics semantics = {})
+    MathContext& add_prefix_operator(std::string_view symbol, F&& function, int precedence, CallableSemantics semantics = {})
     {
         return add_prefix_operator<fw::detail::fn_sig_t<F>>(symbol, std::forward<F>(function), precedence, semantics);
     }
@@ -329,7 +372,7 @@ public:
     MathContext with_prefix_operator(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Prefix,
+        int precedence,
         CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
@@ -341,7 +384,7 @@ public:
     MathContext with_prefix_operator(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Prefix,
+        int precedence,
         CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
@@ -353,16 +396,17 @@ public:
     MathContext& register_prefix_operator(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Prefix,
+        int precedence,
         CallableSemantics semantics = {})
     {
         return add_prefix_operator<Sig>(symbol, std::forward<F>(function), precedence, semantics);
     }
+
     template <class F>
     MathContext& register_prefix_operator(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Prefix,
+        int precedence,
         CallableSemantics semantics = {})
     {
         return add_prefix_operator(symbol, std::forward<F>(function), precedence, semantics);
@@ -370,37 +414,25 @@ public:
 
 #if STRING_MATH_HAS_CONSTEXPR_EVALUATION
     template <class Sig, auto Function>
-    MathContext& add_prefix_operator(
-        std::string_view symbol,
-        int precedence = Precedence::Prefix,
-        CallableSemantics semantics = {})
+    MathContext& add_prefix_operator(std::string_view symbol, int precedence, CallableSemantics semantics = {})
     {
-        return detail_add_prefix_operator_nttp<Sig, Function>(symbol, precedence, semantics);
+        return add_prefix_operator<Sig>(symbol, Function, precedence, semantics);
     }
 
     template <auto Function>
-    MathContext& add_prefix_operator(
-        std::string_view symbol,
-        int precedence = Precedence::Prefix,
-        CallableSemantics semantics = {})
+    MathContext& add_prefix_operator(std::string_view symbol, int precedence, CallableSemantics semantics = {})
     {
         return add_prefix_operator<fw::detail::fn_sig_t<decltype(Function)>, Function>(symbol, precedence, semantics);
     }
 
     template <class Sig, auto Function>
-    MathContext& register_prefix_operator(
-        std::string_view symbol,
-        int precedence = Precedence::Prefix,
-        CallableSemantics semantics = {})
+    MathContext& register_prefix_operator(std::string_view symbol, int precedence, CallableSemantics semantics = {})
     {
         return add_prefix_operator<Sig, Function>(symbol, precedence, semantics);
     }
 
     template <auto Function>
-    MathContext& register_prefix_operator(
-        std::string_view symbol,
-        int precedence = Precedence::Prefix,
-        CallableSemantics semantics = {})
+    MathContext& register_prefix_operator(std::string_view symbol, int precedence, CallableSemantics semantics = {})
     {
         return add_prefix_operator<Function>(symbol, precedence, semantics);
     }
@@ -410,7 +442,7 @@ public:
     MathContext& add_prefix_operator_overloads(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Prefix,
+        int precedence,
         CallableSemantics semantics = {})
     {
         auto shared_function = std::decay_t<F>(std::forward<F>(function));
@@ -422,28 +454,58 @@ public:
     MathContext& add_prefix_operator_for(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Prefix,
+        int precedence,
         CallableSemantics semantics = {})
     {
         return add_prefix_operator_overloads<typename internal::unary_signature_for<Ts, std::decay_t<F>>::type...>(
-            symbol, std::forward<F>(function), precedence, semantics);
+            symbol,
+            std::forward<F>(function),
+            precedence,
+            semantics);
     }
 
     bool remove_prefix_operator(std::string_view symbol);
 
     template <class Sig, class F>
-    MathContext&
-    add_postfix_operator(std::string_view symbol, F&& function, int precedence = Precedence::Postfix, CallableSemantics semantics = {})
+    MathContext& add_postfix_operator(std::string_view symbol, F&& function, int precedence, CallableSemantics semantics = {})
     {
         auto& entry = m_data->m_postfix_operators[std::string(symbol)];
         entry.precedence = precedence;
-        internal::upsert_overload(entry.overloads, internal::make_unary_overload<Sig>(std::forward<F>(function), semantics));
-        m_rebuild_symbol_cache();
+        internal::upsert_overload(
+            entry.overloads,
+            internal::make_fixed_callable_overload<Sig>(std::forward<F>(function), semantics));
         return *this;
     }
+
+    MathContext& add_generic_postfix_operator(
+        std::string_view symbol,
+        int precedence,
+        internal::callable_invoke_fn invoke,
+        ValueType result_type = ValueType::Double,
+        CallableSemantics semantics = {},
+        internal::callable_policy_fn policy_invoke = nullptr)
+    {
+        auto& entry = m_data->m_postfix_operators[std::string(symbol)];
+        entry.precedence = precedence;
+        internal::upsert_overload(
+            entry.overloads,
+            internal::RuntimeCallableOverload{
+                result_type,
+                internal::ArityKind::Fixed,
+                1,
+                1,
+                {},
+                semantics,
+                {},
+                invoke,
+                {},
+                policy_invoke,
+            });
+        return *this;
+    }
+
     template <class F>
-    MathContext&
-    add_postfix_operator(std::string_view symbol, F&& function, int precedence = Precedence::Postfix, CallableSemantics semantics = {})
+    MathContext& add_postfix_operator(std::string_view symbol, F&& function, int precedence, CallableSemantics semantics = {})
     {
         return add_postfix_operator<fw::detail::fn_sig_t<F>>(symbol, std::forward<F>(function), precedence, semantics);
     }
@@ -452,7 +514,7 @@ public:
     MathContext with_postfix_operator(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Postfix,
+        int precedence,
         CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
@@ -464,7 +526,7 @@ public:
     MathContext with_postfix_operator(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Postfix,
+        int precedence,
         CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
@@ -476,16 +538,17 @@ public:
     MathContext& register_postfix_operator(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Postfix,
+        int precedence,
         CallableSemantics semantics = {})
     {
         return add_postfix_operator<Sig>(symbol, std::forward<F>(function), precedence, semantics);
     }
+
     template <class F>
     MathContext& register_postfix_operator(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Postfix,
+        int precedence,
         CallableSemantics semantics = {})
     {
         return add_postfix_operator(symbol, std::forward<F>(function), precedence, semantics);
@@ -493,37 +556,25 @@ public:
 
 #if STRING_MATH_HAS_CONSTEXPR_EVALUATION
     template <class Sig, auto Function>
-    MathContext& add_postfix_operator(
-        std::string_view symbol,
-        int precedence = Precedence::Postfix,
-        CallableSemantics semantics = {})
+    MathContext& add_postfix_operator(std::string_view symbol, int precedence, CallableSemantics semantics = {})
     {
-        return detail_add_postfix_operator_nttp<Sig, Function>(symbol, precedence, semantics);
+        return add_postfix_operator<Sig>(symbol, Function, precedence, semantics);
     }
 
     template <auto Function>
-    MathContext& add_postfix_operator(
-        std::string_view symbol,
-        int precedence = Precedence::Postfix,
-        CallableSemantics semantics = {})
+    MathContext& add_postfix_operator(std::string_view symbol, int precedence, CallableSemantics semantics = {})
     {
         return add_postfix_operator<fw::detail::fn_sig_t<decltype(Function)>, Function>(symbol, precedence, semantics);
     }
 
     template <class Sig, auto Function>
-    MathContext& register_postfix_operator(
-        std::string_view symbol,
-        int precedence = Precedence::Postfix,
-        CallableSemantics semantics = {})
+    MathContext& register_postfix_operator(std::string_view symbol, int precedence, CallableSemantics semantics = {})
     {
         return add_postfix_operator<Sig, Function>(symbol, precedence, semantics);
     }
 
     template <auto Function>
-    MathContext& register_postfix_operator(
-        std::string_view symbol,
-        int precedence = Precedence::Postfix,
-        CallableSemantics semantics = {})
+    MathContext& register_postfix_operator(std::string_view symbol, int precedence, CallableSemantics semantics = {})
     {
         return add_postfix_operator<Function>(symbol, precedence, semantics);
     }
@@ -533,7 +584,7 @@ public:
     MathContext& add_postfix_operator_overloads(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Postfix,
+        int precedence,
         CallableSemantics semantics = {})
     {
         auto shared_function = std::decay_t<F>(std::forward<F>(function));
@@ -545,48 +596,78 @@ public:
     MathContext& add_postfix_operator_for(
         std::string_view symbol,
         F&& function,
-        int precedence = Precedence::Postfix,
+        int precedence,
         CallableSemantics semantics = {})
     {
         return add_postfix_operator_overloads<typename internal::unary_signature_for<Ts, std::decay_t<F>>::type...>(
-            symbol, std::forward<F>(function), precedence, semantics);
+            symbol,
+            std::forward<F>(function),
+            precedence,
+            semantics);
     }
 
     bool remove_postfix_operator(std::string_view symbol);
 
     template <class Sig, class F>
-    MathContext&
-    add_infix_operator(
+    MathContext& add_infix_operator(
         std::string_view symbol,
         F&& function,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+        CallableSemantics semantics = {})
     {
         auto& entry = m_data->m_infix_operators[std::string(symbol)];
         entry.precedence = precedence;
         entry.associativity = associativity;
-        const CallableSemantics effective_semantics =
-            binary_policy == BinaryPolicyKind::None ? semantics : semantics.with_binary_policy(binary_policy);
         internal::upsert_overload(
             entry.overloads,
-            internal::make_binary_overload<Sig>(std::forward<F>(function), effective_semantics));
-        m_rebuild_symbol_cache();
+            internal::make_fixed_callable_overload<Sig>(std::forward<F>(function), semantics));
         return *this;
     }
+
+    MathContext& add_generic_infix_operator(
+        std::string_view symbol,
+        int precedence,
+        Associativity associativity,
+        internal::callable_invoke_fn invoke,
+        ValueType result_type = ValueType::Double,
+        CallableSemantics semantics = {},
+        internal::callable_policy_fn policy_invoke = nullptr)
+    {
+        auto& entry = m_data->m_infix_operators[std::string(symbol)];
+        entry.precedence = precedence;
+        entry.associativity = associativity;
+        internal::upsert_overload(
+            entry.overloads,
+            internal::RuntimeCallableOverload{
+                result_type,
+                internal::ArityKind::Fixed,
+                2,
+                2,
+                {},
+                semantics,
+                {},
+                invoke,
+                {},
+                policy_invoke,
+            });
+        return *this;
+    }
+
     template <class F>
-    MathContext&
-    add_infix_operator(
+    MathContext& add_infix_operator(
         std::string_view symbol,
         F&& function,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+        CallableSemantics semantics = {})
     {
         return add_infix_operator<fw::detail::fn_sig_t<F>>(
-            symbol, std::forward<F>(function), precedence, associativity, semantics, binary_policy);
+            symbol,
+            std::forward<F>(function),
+            precedence,
+            associativity,
+            semantics);
     }
 
     template <class Sig, class F>
@@ -595,12 +676,10 @@ public:
         F&& function,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None) const
+        CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
-        copy.template add_infix_operator<Sig>(
-            symbol, std::forward<F>(function), precedence, associativity, semantics, binary_policy);
+        copy.template add_infix_operator<Sig>(symbol, std::forward<F>(function), precedence, associativity, semantics);
         return copy;
     }
 
@@ -610,38 +689,33 @@ public:
         F&& function,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None) const
+        CallableSemantics semantics = {}) const
     {
         MathContext copy(*this);
-        copy.add_infix_operator(symbol, std::forward<F>(function), precedence, associativity, semantics, binary_policy);
+        copy.add_infix_operator(symbol, std::forward<F>(function), precedence, associativity, semantics);
         return copy;
     }
 
     template <class Sig, class F>
-    MathContext&
-    register_infix_operator(
+    MathContext& register_infix_operator(
         std::string_view symbol,
         F&& function,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+        CallableSemantics semantics = {})
     {
-        return add_infix_operator<Sig>(
-            symbol, std::forward<F>(function), precedence, associativity, semantics, binary_policy);
+        return add_infix_operator<Sig>(symbol, std::forward<F>(function), precedence, associativity, semantics);
     }
+
     template <class F>
-    MathContext&
-    register_infix_operator(
+    MathContext& register_infix_operator(
         std::string_view symbol,
         F&& function,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+        CallableSemantics semantics = {})
     {
-        return add_infix_operator(symbol, std::forward<F>(function), precedence, associativity, semantics, binary_policy);
+        return add_infix_operator(symbol, std::forward<F>(function), precedence, associativity, semantics);
     }
 
 #if STRING_MATH_HAS_CONSTEXPR_EVALUATION
@@ -650,10 +724,9 @@ public:
         std::string_view symbol,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+        CallableSemantics semantics = {})
     {
-        return detail_add_infix_operator_nttp<Sig, Function>(symbol, precedence, associativity, semantics, binary_policy);
+        return add_infix_operator<Sig>(symbol, Function, precedence, associativity, semantics);
     }
 
     template <auto Function>
@@ -661,11 +734,9 @@ public:
         std::string_view symbol,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+        CallableSemantics semantics = {})
     {
-        return add_infix_operator<fw::detail::fn_sig_t<decltype(Function)>, Function>(
-            symbol, precedence, associativity, semantics, binary_policy);
+        return add_infix_operator<fw::detail::fn_sig_t<decltype(Function)>, Function>(symbol, precedence, associativity, semantics);
     }
 
     template <class Sig, auto Function>
@@ -673,10 +744,9 @@ public:
         std::string_view symbol,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+        CallableSemantics semantics = {})
     {
-        return add_infix_operator<Sig, Function>(symbol, precedence, associativity, semantics, binary_policy);
+        return add_infix_operator<Sig, Function>(symbol, precedence, associativity, semantics);
     }
 
     template <auto Function>
@@ -684,40 +754,39 @@ public:
         std::string_view symbol,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+        CallableSemantics semantics = {})
     {
-        return add_infix_operator<Function>(symbol, precedence, associativity, semantics, binary_policy);
+        return add_infix_operator<Function>(symbol, precedence, associativity, semantics);
     }
 #endif
 
     template <class... Sigs, class F>
-    MathContext&
-    add_infix_operator_overloads(
+    MathContext& add_infix_operator_overloads(
         std::string_view symbol,
         F&& function,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+        CallableSemantics semantics = {})
     {
         auto shared_function = std::decay_t<F>(std::forward<F>(function));
-        (add_infix_operator<Sigs>(symbol, shared_function, precedence, associativity, semantics, binary_policy), ...);
+        (add_infix_operator<Sigs>(symbol, shared_function, precedence, associativity, semantics), ...);
         return *this;
     }
 
     template <class... Ts, class F>
-    MathContext&
-    add_infix_operator_for(
+    MathContext& add_infix_operator_for(
         std::string_view symbol,
         F&& function,
         int precedence,
         Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {},
-        BinaryPolicyKind binary_policy = BinaryPolicyKind::None)
+        CallableSemantics semantics = {})
     {
         return add_infix_operator_overloads<typename internal::binary_signature_for<Ts, std::decay_t<F>>::type...>(
-            symbol, std::forward<F>(function), precedence, associativity, semantics, binary_policy);
+            symbol,
+            std::forward<F>(function),
+            precedence,
+            associativity,
+            semantics);
     }
 
     template <class Sig, class F, class PolicyF>
@@ -734,30 +803,12 @@ public:
         entry.associativity = associativity;
         internal::upsert_overload(
             entry.overloads,
-            internal::make_binary_overload_with_policy<Sig>(
+            internal::make_fixed_callable_overload_with_policy<Sig>(
                 std::forward<F>(function),
                 std::forward<PolicyF>(policy_handler),
                 semantics));
-        m_rebuild_symbol_cache();
         return *this;
     }
-#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
-    template <auto Function, auto PolicyHandler, std::size_t SymbolSize>
-    MathContext& add_infix_operator_with_policy(
-        const char (&symbol)[SymbolSize],
-        int precedence,
-        Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {})
-    {
-        return add_infix_operator_with_policy(
-            std::string_view(symbol, SymbolSize - 1),
-            Function,
-            precedence,
-            PolicyHandler,
-            associativity,
-            semantics);
-    }
-#endif
 
     template <class F, class PolicyF>
     MathContext& add_infix_operator_with_policy(
@@ -769,6 +820,55 @@ public:
         CallableSemantics semantics = {})
     {
         return add_infix_operator_with_policy<fw::detail::fn_sig_t<F>>(
+            symbol,
+            std::forward<F>(function),
+            precedence,
+            std::forward<PolicyF>(policy_handler),
+            associativity,
+            semantics);
+    }
+
+    template <class Sig, class... Rest, class F, class PolicyF>
+    MathContext& add_infix_operator_with_policy_overloads(
+        std::string_view symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        auto shared_function = std::decay_t<F>(std::forward<F>(function));
+        auto shared_policy = std::decay_t<PolicyF>(std::forward<PolicyF>(policy_handler));
+        add_infix_operator_with_policy<Sig>(
+            symbol,
+            shared_function,
+            precedence,
+            shared_policy,
+            associativity,
+            semantics);
+        if constexpr (sizeof...(Rest) != 0)
+        {
+            add_infix_operator_with_policy_overloads<Rest...>(
+                symbol,
+                shared_function,
+                precedence,
+                shared_policy,
+                associativity,
+                semantics);
+        }
+        return *this;
+    }
+
+    template <class... Ts, class F, class PolicyF>
+    MathContext& add_infix_operator_with_policy_for(
+        std::string_view symbol,
+        F&& function,
+        int precedence,
+        PolicyF&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return add_infix_operator_with_policy_overloads<typename internal::binary_signature_for<Ts, std::decay_t<F>>::type...>(
             symbol,
             std::forward<F>(function),
             precedence,
@@ -794,17 +894,6 @@ public:
             associativity,
             semantics);
     }
-#if STRING_MATH_HAS_CONSTEXPR_EVALUATION
-    template <auto Function, auto PolicyHandler, std::size_t SymbolSize>
-    MathContext& register_infix_operator_with_policy(
-        const char (&symbol)[SymbolSize],
-        int precedence,
-        Associativity associativity = Associativity::Left,
-        CallableSemantics semantics = {})
-    {
-        return add_infix_operator_with_policy<Function, PolicyHandler>(symbol, precedence, associativity, semantics);
-    }
-#endif
 
     template <class F, class PolicyF>
     MathContext& register_infix_operator_with_policy(
@@ -869,12 +958,11 @@ public:
     template <class F>
     MathContext& add_literal_parser(std::string_view prefix, std::string_view suffix, F&& parser)
     {
-        m_data->m_literal_parsers.push_back(
-            internal::LiteralParserEntry{
-                std::string(prefix),
-                std::string(suffix),
-                fw::function_wrapper<std::optional<MathValue>(std::string_view)>(std::forward<F>(parser)),
-            });
+        m_data->m_literal_parsers.push_back(internal::LiteralParserEntry{
+            std::string(prefix),
+            std::string(suffix),
+            fw::function_wrapper<std::optional<MathValue>(std::string_view)>(std::forward<F>(parser)),
+        });
         return *this;
     }
 
@@ -894,10 +982,17 @@ public:
 
     void clear_literal_parsers();
     std::optional<MathValue> try_parse_literal(std::string_view token) const;
+
     const internal::PrefixOperatorEntry* find_prefix_operator(std::string_view symbol) const;
     const internal::PostfixOperatorEntry* find_postfix_operator(std::string_view symbol) const;
     const internal::InfixOperatorEntry* find_infix_operator(std::string_view symbol) const;
     const internal::FunctionEntry* find_function(std::string_view name) const;
+
+    internal::CollectedCallable lookup_prefix_operator(std::string_view symbol) const;
+    internal::CollectedCallable lookup_postfix_operator(std::string_view symbol) const;
+    internal::CollectedCallable lookup_infix_operator(std::string_view symbol) const;
+    internal::CollectedCallable lookup_function(std::string_view name) const;
+
     std::string match_prefix_symbol(std::string_view text) const;
     std::string match_postfix_symbol(std::string_view text) const;
     std::string match_infix_symbol(std::string_view text) const;
@@ -910,7 +1005,7 @@ public:
     std::optional<OperatorInfo> inspect_prefix_operator(std::string_view symbol) const;
     std::optional<OperatorInfo> inspect_postfix_operator(std::string_view symbol) const;
     std::optional<OperatorInfo> inspect_infix_operator(std::string_view symbol) const;
-    static MathContext with_builtins();
+
 #if STRING_MATH_HAS_CONSTEXPR_EVALUATION
     static constexpr auto compile_time();
 #endif
@@ -926,65 +1021,66 @@ private:
     std::shared_ptr<internal::RuntimeContextData> m_data;
 
     MathContext& detail_set_value(std::string_view name, MathValue value);
-    MathContext detail_with_value(std::string_view name, MathValue value) const
+
+    template <class T, class F>
+    MathContext& detail_add_typed_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        F&& function,
+        CallableSemantics semantics)
     {
-        MathContext copy(*this);
-        copy.detail_set_value(name, value);
-        return copy;
+        auto& entry = m_data->m_functions[std::string(name)];
+        internal::upsert_overload(
+            entry.overloads,
+            internal::make_typed_variadic_callable_overload<T>(
+                min_arity,
+                internal::k_unbounded_arity,
+                std::forward<F>(function),
+                semantics));
+        return *this;
     }
-    template <class Sig, auto Function>
-    MathContext& detail_add_function_nttp(std::string_view name, CallableSemantics semantics)
+
+    template <class EntryMap>
+    const typename EntryMap::mapped_type* m_find_entry(std::string_view name, const EntryMap internal::RuntimeContextData::* member) const
     {
-        return add_function<Sig>(name, Function, semantics);
+        const std::string key(name);
+        for (const internal::RuntimeContextData* current = m_data.get(); current != nullptr; current = current->m_parent.get())
+        {
+            const auto& map = current->*member;
+            const auto found = map.find(key);
+            if (found != map.end())
+            {
+                return &found->second;
+            }
+        }
+        return nullptr;
     }
-    template <class Sig, auto Function>
-    MathContext detail_add_function_nttp(std::string_view name, CallableSemantics semantics) const
+
+    template <class EntryMap>
+    internal::CollectedCallable m_lookup_entry(std::string_view name, const EntryMap internal::RuntimeContextData::* member) const
     {
-        return with_function<Sig>(name, Function, semantics);
+        if (const auto* entry = m_find_entry(name, member); entry != nullptr)
+        {
+            return entry->collect();
+        }
+        return {};
     }
-    template <class Sig, auto Function>
-    MathContext& detail_add_prefix_operator_nttp(std::string_view symbol, int precedence, CallableSemantics semantics)
+
+    template <class EntryMap>
+    std::vector<std::string> m_collect_names(const EntryMap internal::RuntimeContextData::* member) const
     {
-        return add_prefix_operator<Sig>(symbol, Function, precedence, semantics);
-    }
-    template <class Sig, auto Function>
-    MathContext detail_add_prefix_operator_nttp(std::string_view symbol, int precedence, CallableSemantics semantics) const
-    {
-        return with_prefix_operator<Sig>(symbol, Function, precedence, semantics);
-    }
-    template <class Sig, auto Function>
-    MathContext& detail_add_postfix_operator_nttp(std::string_view symbol, int precedence, CallableSemantics semantics)
-    {
-        return add_postfix_operator<Sig>(symbol, Function, precedence, semantics);
-    }
-    template <class Sig, auto Function>
-    MathContext detail_add_postfix_operator_nttp(std::string_view symbol, int precedence, CallableSemantics semantics) const
-    {
-        return with_postfix_operator<Sig>(symbol, Function, precedence, semantics);
-    }
-    template <class Sig, auto Function>
-    MathContext& detail_add_infix_operator_nttp(
-        std::string_view symbol,
-        int precedence,
-        Associativity associativity,
-        CallableSemantics semantics,
-        BinaryPolicyKind binary_policy)
-    {
-        return add_infix_operator<Sig>(symbol, Function, precedence, associativity, semantics, binary_policy);
-    }
-    template <class Sig, auto Function>
-    MathContext detail_add_infix_operator_nttp(
-        std::string_view symbol,
-        int precedence,
-        Associativity associativity,
-        CallableSemantics semantics,
-        BinaryPolicyKind binary_policy) const
-    {
-        return with_infix_operator<Sig>(symbol, Function, precedence, associativity, semantics, binary_policy);
+        std::set<std::string> names;
+        for (const internal::RuntimeContextData* current = m_data.get(); current != nullptr; current = current->m_parent.get())
+        {
+            for (const auto& entry : current->*member)
+            {
+                names.insert(entry.first);
+            }
+        }
+        return std::vector<std::string>(names.begin(), names.end());
     }
 
     std::string m_match_symbol(std::string_view text, SymbolKind kind) const;
-    void m_rebuild_symbol_cache();
 };
 
 class FrozenMathContext
@@ -992,7 +1088,9 @@ class FrozenMathContext
 public:
     FrozenMathContext() = default;
 
-    explicit FrozenMathContext(MathContext context) : m_context(std::move(context)) {}
+    explicit FrozenMathContext(MathContext context)
+        : m_context(std::move(context))
+    {}
 
     const MathContext& context() const noexcept
     {
@@ -1008,9 +1106,13 @@ private:
     MathContext m_context;
 };
 
-inline MathContext::MathContext() : m_data(std::make_shared<internal::RuntimeContextData>()) {}
+inline MathContext::MathContext()
+    : m_data(std::make_shared<internal::RuntimeContextData>())
+{}
 
-inline MathContext::MathContext(const MathContext& other) : m_data(std::make_shared<internal::RuntimeContextData>(*other.m_data)) {}
+inline MathContext::MathContext(const MathContext& other)
+    : m_data(std::make_shared<internal::RuntimeContextData>(*other.m_data))
+{}
 
 inline MathContext& MathContext::operator=(const MathContext& other)
 {
@@ -1021,7 +1123,8 @@ inline MathContext& MathContext::operator=(const MathContext& other)
     return *this;
 }
 
-inline MathContext::MathContext(const MathContext& parent, bool inherit_only) : m_data(std::make_shared<internal::RuntimeContextData>())
+inline MathContext::MathContext(const MathContext& parent, bool inherit_only)
+    : m_data(std::make_shared<internal::RuntimeContextData>())
 {
     (void)inherit_only;
     m_data->m_parent = parent.m_data;
@@ -1088,32 +1191,17 @@ inline bool MathContext::remove_function(std::string_view name)
 
 inline bool MathContext::remove_prefix_operator(std::string_view symbol)
 {
-    const bool removed = m_data->m_prefix_operators.erase(std::string(symbol)) != 0;
-    if (removed)
-    {
-        m_rebuild_symbol_cache();
-    }
-    return removed;
+    return m_data->m_prefix_operators.erase(std::string(symbol)) != 0;
 }
 
 inline bool MathContext::remove_postfix_operator(std::string_view symbol)
 {
-    const bool removed = m_data->m_postfix_operators.erase(std::string(symbol)) != 0;
-    if (removed)
-    {
-        m_rebuild_symbol_cache();
-    }
-    return removed;
+    return m_data->m_postfix_operators.erase(std::string(symbol)) != 0;
 }
 
 inline bool MathContext::remove_infix_operator(std::string_view symbol)
 {
-    const bool removed = m_data->m_infix_operators.erase(std::string(symbol)) != 0;
-    if (removed)
-    {
-        m_rebuild_symbol_cache();
-    }
-    return removed;
+    return m_data->m_infix_operators.erase(std::string(symbol)) != 0;
 }
 
 inline void MathContext::clear_literal_parsers()
@@ -1146,58 +1234,42 @@ inline std::optional<MathValue> MathContext::try_parse_literal(std::string_view 
 
 inline const internal::PrefixOperatorEntry* MathContext::find_prefix_operator(std::string_view symbol) const
 {
-    const std::string key(symbol);
-    for (const internal::RuntimeContextData* current = m_data.get(); current != nullptr; current = current->m_parent.get())
-    {
-        const auto found = current->m_prefix_operators.find(key);
-        if (found != current->m_prefix_operators.end())
-        {
-            return &found->second;
-        }
-    }
-    return nullptr;
+    return m_find_entry(symbol, &internal::RuntimeContextData::m_prefix_operators);
 }
 
 inline const internal::PostfixOperatorEntry* MathContext::find_postfix_operator(std::string_view symbol) const
 {
-    const std::string key(symbol);
-    for (const internal::RuntimeContextData* current = m_data.get(); current != nullptr; current = current->m_parent.get())
-    {
-        const auto found = current->m_postfix_operators.find(key);
-        if (found != current->m_postfix_operators.end())
-        {
-            return &found->second;
-        }
-    }
-    return nullptr;
+    return m_find_entry(symbol, &internal::RuntimeContextData::m_postfix_operators);
 }
 
 inline const internal::InfixOperatorEntry* MathContext::find_infix_operator(std::string_view symbol) const
 {
-    const std::string key(symbol);
-    for (const internal::RuntimeContextData* current = m_data.get(); current != nullptr; current = current->m_parent.get())
-    {
-        const auto found = current->m_infix_operators.find(key);
-        if (found != current->m_infix_operators.end())
-        {
-            return &found->second;
-        }
-    }
-    return nullptr;
+    return m_find_entry(symbol, &internal::RuntimeContextData::m_infix_operators);
 }
 
 inline const internal::FunctionEntry* MathContext::find_function(std::string_view name) const
 {
-    const std::string key(name);
-    for (const internal::RuntimeContextData* current = m_data.get(); current != nullptr; current = current->m_parent.get())
-    {
-        const auto found = current->m_functions.find(key);
-        if (found != current->m_functions.end())
-        {
-            return &found->second;
-        }
-    }
-    return nullptr;
+    return m_find_entry(name, &internal::RuntimeContextData::m_functions);
+}
+
+inline internal::CollectedCallable MathContext::lookup_prefix_operator(std::string_view symbol) const
+{
+    return m_lookup_entry(symbol, &internal::RuntimeContextData::m_prefix_operators);
+}
+
+inline internal::CollectedCallable MathContext::lookup_postfix_operator(std::string_view symbol) const
+{
+    return m_lookup_entry(symbol, &internal::RuntimeContextData::m_postfix_operators);
+}
+
+inline internal::CollectedCallable MathContext::lookup_infix_operator(std::string_view symbol) const
+{
+    return m_lookup_entry(symbol, &internal::RuntimeContextData::m_infix_operators);
+}
+
+inline internal::CollectedCallable MathContext::lookup_function(std::string_view name) const
+{
+    return m_lookup_entry(name, &internal::RuntimeContextData::m_functions);
 }
 
 inline std::string MathContext::match_prefix_symbol(std::string_view text) const
@@ -1217,54 +1289,22 @@ inline std::string MathContext::match_infix_symbol(std::string_view text) const
 
 inline std::vector<std::string> MathContext::function_names() const
 {
-    std::set<std::string> names;
-    for (const internal::RuntimeContextData* current = m_data.get(); current != nullptr; current = current->m_parent.get())
-    {
-        for (const auto& entry : current->m_functions)
-        {
-            names.insert(entry.first);
-        }
-    }
-    return std::vector<std::string>(names.begin(), names.end());
+    return m_collect_names(&internal::RuntimeContextData::m_functions);
 }
 
 inline std::vector<std::string> MathContext::prefix_operator_names() const
 {
-    std::set<std::string> names;
-    for (const internal::RuntimeContextData* current = m_data.get(); current != nullptr; current = current->m_parent.get())
-    {
-        for (const auto& entry : current->m_prefix_operators)
-        {
-            names.insert(entry.first);
-        }
-    }
-    return std::vector<std::string>(names.begin(), names.end());
+    return m_collect_names(&internal::RuntimeContextData::m_prefix_operators);
 }
 
 inline std::vector<std::string> MathContext::postfix_operator_names() const
 {
-    std::set<std::string> names;
-    for (const internal::RuntimeContextData* current = m_data.get(); current != nullptr; current = current->m_parent.get())
-    {
-        for (const auto& entry : current->m_postfix_operators)
-        {
-            names.insert(entry.first);
-        }
-    }
-    return std::vector<std::string>(names.begin(), names.end());
+    return m_collect_names(&internal::RuntimeContextData::m_postfix_operators);
 }
 
 inline std::vector<std::string> MathContext::infix_operator_names() const
 {
-    std::set<std::string> names;
-    for (const internal::RuntimeContextData* current = m_data.get(); current != nullptr; current = current->m_parent.get())
-    {
-        for (const auto& entry : current->m_infix_operators)
-        {
-            names.insert(entry.first);
-        }
-    }
-    return std::vector<std::string>(names.begin(), names.end());
+    return m_collect_names(&internal::RuntimeContextData::m_infix_operators);
 }
 
 inline std::vector<LiteralParserInfo> MathContext::literal_parsers() const
@@ -1290,33 +1330,16 @@ inline std::optional<FunctionInfo> MathContext::inspect_function(std::string_vie
 
     FunctionInfo info;
     info.name = std::string(name);
-    for (const auto& overload : entry->fixed_overloads)
+    for (const auto& overload : entry->overloads)
     {
-        info.fixed_overloads.push_back(FunctionOverloadInfo{
+        info.overloads.push_back(CallableOverloadInfo{
             overload.result_type,
-            overload.argument_types,
+            overload.arity_kind,
+            overload.min_arity,
+            overload.max_arity,
+            overload.arg_types,
             overload.semantics,
         });
-
-        if (overload.argument_types.size() == 1)
-        {
-            info.unary_overloads.push_back(
-                UnaryOverloadInfo{overload.result_type, overload.argument_types.front(), overload.semantics});
-        }
-        else if (overload.argument_types.size() == 2)
-        {
-            info.binary_overloads.push_back(BinaryOverloadInfo{
-                overload.result_type,
-                overload.argument_types[0],
-                overload.argument_types[1],
-                overload.semantics,
-            });
-        }
-    }
-    for (const auto& overload : entry->variadic_overloads)
-    {
-        info.variadic_min_arities.push_back(overload.min_arity);
-        info.variadic_semantics.push_back(overload.semantics);
     }
     return info;
 }
@@ -1334,7 +1357,14 @@ inline std::optional<OperatorInfo> MathContext::inspect_prefix_operator(std::str
     info.precedence = entry->precedence;
     for (const auto& overload : entry->overloads)
     {
-        info.unary_overloads.push_back(UnaryOverloadInfo{overload.result_type, overload.argument_type, overload.semantics});
+        info.overloads.push_back(CallableOverloadInfo{
+            overload.result_type,
+            overload.arity_kind,
+            overload.min_arity,
+            overload.max_arity,
+            overload.arg_types,
+            overload.semantics,
+        });
     }
     return info;
 }
@@ -1352,7 +1382,14 @@ inline std::optional<OperatorInfo> MathContext::inspect_postfix_operator(std::st
     info.precedence = entry->precedence;
     for (const auto& overload : entry->overloads)
     {
-        info.unary_overloads.push_back(UnaryOverloadInfo{overload.result_type, overload.argument_type, overload.semantics});
+        info.overloads.push_back(CallableOverloadInfo{
+            overload.result_type,
+            overload.arity_kind,
+            overload.min_arity,
+            overload.max_arity,
+            overload.arg_types,
+            overload.semantics,
+        });
     }
     return info;
 }
@@ -1371,8 +1408,14 @@ inline std::optional<OperatorInfo> MathContext::inspect_infix_operator(std::stri
     info.associativity = entry->associativity;
     for (const auto& overload : entry->overloads)
     {
-        info.binary_overloads.push_back(
-            BinaryOverloadInfo{overload.result_type, overload.left_type, overload.right_type, overload.semantics});
+        info.overloads.push_back(CallableOverloadInfo{
+            overload.result_type,
+            overload.arity_kind,
+            overload.min_arity,
+            overload.max_arity,
+            overload.arg_types,
+            overload.semantics,
+        });
     }
     return info;
 }
@@ -1382,18 +1425,19 @@ inline std::string MathContext::m_match_symbol(std::string_view text, SymbolKind
     std::string best;
     for (const internal::RuntimeContextData* current = m_data.get(); current != nullptr; current = current->m_parent.get())
     {
-        const auto* symbols = &current->m_prefix_symbols;
+        const auto* map = &current->m_prefix_operators;
         if (kind == SymbolKind::Postfix)
         {
-            symbols = &current->m_postfix_symbols;
+            map = &current->m_postfix_operators;
         }
         else if (kind == SymbolKind::Infix)
         {
-            symbols = &current->m_infix_symbols;
+            map = &current->m_infix_operators;
         }
 
-        for (const auto& symbol : *symbols)
+        for (const auto& entry : *map)
         {
+            const auto& symbol = entry.first;
             if (text.size() >= symbol.size() && text.substr(0, symbol.size()) == symbol && symbol.size() > best.size())
             {
                 best = symbol;
@@ -1402,30 +1446,6 @@ inline std::string MathContext::m_match_symbol(std::string_view text, SymbolKind
     }
 
     return best;
-}
-
-inline void MathContext::m_rebuild_symbol_cache()
-{
-    auto rebuild = [](const auto& map) {
-        std::vector<std::string> symbols;
-        symbols.reserve(map.size());
-        for (const auto& entry : map)
-        {
-            symbols.push_back(entry.first);
-        }
-        std::sort(symbols.begin(), symbols.end(), [](const std::string& left, const std::string& right) {
-            if (left.size() != right.size())
-            {
-                return left.size() > right.size();
-            }
-            return left < right;
-        });
-        return symbols;
-    };
-
-    m_data->m_prefix_symbols = rebuild(m_data->m_prefix_operators);
-    m_data->m_postfix_symbols = rebuild(m_data->m_postfix_operators);
-    m_data->m_infix_symbols = rebuild(m_data->m_infix_operators);
 }
 
 inline Result<MathValue> try_parse_literal(std::string_view token, const MathContext& context, SourceSpan span = {})

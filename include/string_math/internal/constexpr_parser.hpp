@@ -1,7 +1,15 @@
 #pragma once
 // Do not include this file directly. Use <string_math/string_math.hpp> or individual public headers.
 
-#include <string_math/internal/builtins.hpp>
+#include <array>
+#include <stdexcept>
+#include <string_view>
+#include <type_traits>
+#include <vector>
+
+#include <string_math/internal/overload_impl.hpp>
+#include <string_math/internal/parser.hpp>
+#include <string_math/internal/static_context_data.hpp>
 #include <string_math/value/value.hpp>
 
 namespace string_math::internal
@@ -12,7 +20,8 @@ class ConstexprParser
 {
 public:
     constexpr explicit ConstexprParser(std::string_view expression, const Context* context = nullptr)
-        : m_expression(expression), m_context(context)
+        : m_expression(expression),
+          m_context(context)
     {}
 
     constexpr MathValue parse()
@@ -30,15 +39,27 @@ private:
     struct MatchedOperator
     {
         std::string_view symbol;
-        int precedence{ 0 };
-        Associativity associativity{ Associativity::Left };
+        int precedence{0};
+        Associativity associativity{Associativity::Left};
     };
 
     struct MatchedUnaryOperator
     {
         std::string_view symbol;
-        int precedence{ 0 };
+        int precedence{0};
     };
+
+    static constexpr bool m_has_arity(std::span<const CallableOverloadView> overloads, std::size_t arity)
+    {
+        for (const CallableOverloadView& overload : overloads)
+        {
+            if (overload.accepts_arity(arity))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     constexpr void m_skip_spaces() noexcept
     {
@@ -60,7 +81,7 @@ private:
                 break;
             }
 
-            const auto postfix = m_match_postfix();
+            const MatchedUnaryOperator postfix = m_match_postfix();
             if (!postfix.symbol.empty() && postfix.precedence >= min_precedence)
             {
                 m_position += postfix.symbol.size();
@@ -68,20 +89,20 @@ private:
                 continue;
             }
 
-            const auto match = m_match_infix();
-            if (match.symbol.empty() || match.precedence < min_precedence)
+            const MatchedOperator infix = m_match_infix();
+            if (infix.symbol.empty() || infix.precedence < min_precedence)
             {
                 break;
             }
 
-            m_position += match.symbol.size();
-            const int next_min = match.associativity == Associativity::Left ? match.precedence + 1 : match.precedence;
+            m_position += infix.symbol.size();
+            const int next_min = infix.associativity == Associativity::Left ? infix.precedence + 1 : infix.precedence;
             MathValue right = m_parse_expression(next_min);
-            left = m_apply_infix(match.symbol, left, right);
+            left = m_apply_infix(infix.symbol, left, right);
         }
 
         m_skip_spaces();
-        if (min_precedence <= Precedence::Conditional && m_position < m_expression.size() && m_expression[m_position] == '?')
+        if (min_precedence <= k_conditional_precedence && m_position < m_expression.size() && m_expression[m_position] == '?')
         {
             ++m_position;
             const MathValue true_value = m_parse_expression(0);
@@ -91,7 +112,7 @@ private:
                 throw std::invalid_argument("string_math: expected ':' in conditional expression");
             }
             ++m_position;
-            const MathValue false_value = m_parse_expression(Precedence::Conditional);
+            const MathValue false_value = m_parse_expression(k_conditional_precedence);
             return m_truthy(left) ? true_value : false_value;
         }
 
@@ -100,17 +121,17 @@ private:
 
     constexpr MatchedOperator m_match_infix() const noexcept
     {
-        const std::string_view tail = m_expression.substr(m_position);
         if constexpr (!std::is_same_v<Context, void>)
         {
             if (m_context != nullptr)
             {
+                const std::string_view tail = m_expression.substr(m_position);
                 const std::string_view symbol = m_context->match_infix_symbol(tail);
                 if (!symbol.empty())
                 {
                     if (const auto* entry = m_context->find_infix_operator(symbol); entry != nullptr)
                     {
-                        return {entry->symbol, entry->precedence, entry->associativity};
+                        return {entry->name_or_symbol, entry->precedence, entry->associativity};
                     }
                 }
             }
@@ -120,17 +141,17 @@ private:
 
     constexpr MatchedUnaryOperator m_match_prefix() const noexcept
     {
-        const std::string_view tail = m_expression.substr(m_position);
         if constexpr (!std::is_same_v<Context, void>)
         {
             if (m_context != nullptr)
             {
+                const std::string_view tail = m_expression.substr(m_position);
                 const std::string_view symbol = m_context->match_prefix_symbol(tail);
                 if (!symbol.empty())
                 {
                     if (const auto* entry = m_context->find_prefix_operator(symbol); entry != nullptr)
                     {
-                        return {entry->symbol, entry->precedence};
+                        return {entry->name_or_symbol, entry->precedence};
                     }
                 }
             }
@@ -140,17 +161,17 @@ private:
 
     constexpr MatchedUnaryOperator m_match_postfix() const noexcept
     {
-        const std::string_view tail = m_expression.substr(m_position);
         if constexpr (!std::is_same_v<Context, void>)
         {
             if (m_context != nullptr)
             {
+                const std::string_view tail = m_expression.substr(m_position);
                 const std::string_view symbol = m_context->match_postfix_symbol(tail);
                 if (!symbol.empty())
                 {
                     if (const auto* entry = m_context->find_postfix_operator(symbol); entry != nullptr)
                     {
-                        return {entry->symbol, entry->precedence};
+                        return {entry->name_or_symbol, entry->precedence};
                     }
                 }
             }
@@ -166,12 +187,12 @@ private:
             throw std::invalid_argument("string_math: expected expression");
         }
 
-        const auto match = m_match_prefix();
-        if (!match.symbol.empty())
+        const MatchedUnaryOperator prefix = m_match_prefix();
+        if (!prefix.symbol.empty())
         {
-            m_position += match.symbol.size();
-            const MathValue value = m_parse_expression(match.precedence);
-            return m_apply_prefix(match.symbol, value);
+            m_position += prefix.symbol.size();
+            const MathValue value = m_parse_expression(prefix.precedence);
+            return m_apply_prefix(prefix.symbol, value);
         }
 
         return m_parse_primary();
@@ -223,6 +244,20 @@ private:
             {
                 return m_parse_function_call(identifier);
             }
+
+            if constexpr (!std::is_same_v<Context, void>)
+            {
+                if (m_context != nullptr)
+                {
+                    const auto callable = m_context->lookup_function(identifier);
+                    if (callable && m_has_arity(callable.overloads, 1))
+                    {
+                        const MathValue argument = m_parse_expression(k_implicit_prefix_call_precedence);
+                        return m_apply_function(identifier, &argument, 1);
+                    }
+                }
+            }
+
             throw std::invalid_argument("string_math: unknown constexpr identifier");
         }
 
@@ -250,6 +285,7 @@ private:
         {
             throw std::invalid_argument("string_math: expected '}'");
         }
+
         std::size_t trimmed_begin = begin;
         std::size_t trimmed_end = m_position;
         while (trimmed_begin < trimmed_end && is_space(m_expression[trimmed_begin]))
@@ -260,6 +296,7 @@ private:
         {
             --trimmed_end;
         }
+
         const std::string_view name = m_expression.substr(trimmed_begin, trimmed_end - trimmed_begin);
         ++m_position;
         return name;
@@ -268,18 +305,13 @@ private:
     constexpr MathValue m_parse_function_call(std::string_view name)
     {
         ++m_position;
-        std::array<MathValue, 8> arguments{};
-        std::size_t count = 0;
+        std::vector<MathValue> arguments;
         m_skip_spaces();
         if (m_position < m_expression.size() && m_expression[m_position] != ')')
         {
             for (;;)
             {
-                if (count >= arguments.size())
-                {
-                    throw std::invalid_argument("string_math: too many constexpr function arguments");
-                }
-                arguments[count++] = m_parse_expression(0);
+                arguments.push_back(m_parse_expression(0));
                 m_skip_spaces();
                 if (m_position >= m_expression.size() || m_expression[m_position] != ',')
                 {
@@ -296,18 +328,7 @@ private:
         }
         ++m_position;
 
-        if constexpr (!std::is_same_v<Context, void>)
-        {
-            if (m_context != nullptr)
-            {
-                if (const auto* function = m_context->find_function(name); function != nullptr)
-                {
-                    return invoke_constexpr_function(*function, arguments.data(), count);
-                }
-            }
-        }
-
-        throw std::invalid_argument("string_math: unsupported constexpr function");
+        return m_apply_function(name, arguments.data(), arguments.size());
     }
 
     constexpr std::string_view m_parse_literal()
@@ -316,12 +337,34 @@ private:
         while (m_position < m_expression.size())
         {
             const char ch = m_expression[m_position];
-            if (is_space(ch) || ch == ')' || ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '%' || ch == '^')
+            if (is_space(ch) || ch == ')' || ch == ',' || ch == '{' || ch == '}')
             {
                 break;
             }
+
+            if constexpr (!std::is_same_v<Context, void>)
+            {
+                if (m_context != nullptr && m_position != begin)
+                {
+                    const std::string_view tail = m_expression.substr(m_position);
+                    const std::string_view infix = m_context->match_infix_symbol(tail);
+                    const std::string_view postfix = m_context->match_postfix_symbol(tail);
+                    if (!infix.empty() || !postfix.empty())
+                    {
+                        const char previous = m_expression[m_position - 1];
+                        const bool signed_exponent = (ch == '+' || ch == '-') && (previous == 'e' || previous == 'E');
+                        const bool literal_alpha = is_identifier_char(ch) || ch == '.';
+                        if (!signed_exponent && !literal_alpha)
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+
             ++m_position;
         }
+
         return m_expression.substr(begin, m_position - begin);
     }
 
@@ -400,8 +443,8 @@ private:
             consume_fixed_suffix("i16", fixed_integral_suffix::I16) || consume_fixed_suffix("u8", fixed_integral_suffix::U8) ||
             consume_fixed_suffix("i8", fixed_integral_suffix::I8) || consume_fixed_suffix("z", fixed_integral_suffix::Z);
 
-        const bool is_floating_literal = text.find('.') != std::string_view::npos ||
-            text.find('e') != std::string_view::npos || text.find('E') != std::string_view::npos;
+        const bool is_floating_literal =
+            text.find('.') != std::string_view::npos || text.find('e') != std::string_view::npos || text.find('E') != std::string_view::npos;
 
         bool changed = true;
         while (changed && !text.empty())
@@ -571,47 +614,121 @@ private:
 
     constexpr MathValue m_apply_infix(std::string_view symbol, const MathValue& left, const MathValue& right)
     {
-        if constexpr (!std::is_same_v<Context, void>)
-        {
-            if (m_context != nullptr)
-            {
-                if (const auto* entry = m_context->find_infix_operator(symbol); entry != nullptr)
-                {
-                    return invoke_constexpr_infix(*entry, left, right);
-                }
-            }
-        }
-        throw std::invalid_argument("string_math: unsupported constexpr operator");
+        const std::array<MathValue, 2> arguments{left, right};
+        return m_apply_binary_callable(symbol, m_context->lookup_infix_operator(symbol), arguments);
     }
 
     constexpr MathValue m_apply_prefix(std::string_view symbol, const MathValue& value)
     {
-        if constexpr (!std::is_same_v<Context, void>)
-        {
-            if (m_context != nullptr)
-            {
-                if (const auto* entry = m_context->find_prefix_operator(symbol); entry != nullptr)
-                {
-                    return invoke_constexpr_prefix(*entry, value);
-                }
-            }
-        }
-        throw std::invalid_argument("string_math: unsupported constexpr prefix operator");
+        const std::array<MathValue, 1> arguments{value};
+        return m_apply_unary_callable(symbol, m_context->lookup_prefix_operator(symbol), arguments);
     }
 
     constexpr MathValue m_apply_postfix(std::string_view symbol, const MathValue& value)
     {
-        if constexpr (!std::is_same_v<Context, void>)
+        const std::array<MathValue, 1> arguments{value};
+        return m_apply_unary_callable(symbol, m_context->lookup_postfix_operator(symbol), arguments);
+    }
+
+    constexpr MathValue m_apply_function(std::string_view name, const MathValue* arguments, std::size_t count)
+    {
+        if constexpr (std::is_same_v<Context, void>)
         {
-            if (m_context != nullptr)
-            {
-                if (const auto* entry = m_context->find_postfix_operator(symbol); entry != nullptr)
-                {
-                    return invoke_constexpr_postfix(*entry, value);
-                }
-            }
+            (void)name;
+            (void)arguments;
+            (void)count;
+            throw std::invalid_argument("string_math: unsupported constexpr function");
         }
-        throw std::invalid_argument("string_math: unsupported constexpr postfix operator");
+        else
+        {
+            if (m_context == nullptr)
+            {
+                throw std::invalid_argument("string_math: unsupported constexpr function");
+            }
+
+            const auto callable = m_context->lookup_function(name);
+            if (!callable)
+            {
+                throw std::invalid_argument("string_math: unsupported constexpr function");
+            }
+
+            std::vector<ValueType> argument_types;
+            argument_types.reserve(count);
+            for (std::size_t index = 0; index < count; ++index)
+            {
+                argument_types.push_back(arguments[index].type());
+            }
+
+            const OverloadResolutionMatch match = resolve_overload_match(callable.overloads, argument_types, m_context->policy().promotion);
+            if (match.overload == nullptr)
+            {
+                throw std::invalid_argument("string_math: no matching overload for constexpr function");
+            }
+            if (match.ambiguous)
+            {
+                throw std::invalid_argument("string_math: ambiguous constexpr function overload");
+            }
+
+            return invoke_constexpr_overload(*match.overload, arguments, count, m_context->policy(), name);
+        }
+    }
+
+    template <std::size_t Arity>
+    constexpr MathValue m_apply_unary_callable(
+        std::string_view symbol,
+        const CollectedCallable& callable,
+        const std::array<MathValue, Arity>& arguments)
+    {
+        return m_apply_fixed_callable(symbol, callable, arguments);
+    }
+
+    template <std::size_t Arity>
+    constexpr MathValue m_apply_binary_callable(
+        std::string_view symbol,
+        const CollectedCallable& callable,
+        const std::array<MathValue, Arity>& arguments)
+    {
+        return m_apply_fixed_callable(symbol, callable, arguments);
+    }
+
+    template <std::size_t Arity>
+    constexpr MathValue m_apply_fixed_callable(
+        std::string_view symbol,
+        const CollectedCallable& callable,
+        const std::array<MathValue, Arity>& arguments)
+    {
+        if constexpr (std::is_same_v<Context, void>)
+        {
+            (void)symbol;
+            (void)callable;
+            (void)arguments;
+            throw std::invalid_argument("string_math: unsupported constexpr operator");
+        }
+        else
+        {
+            if (m_context == nullptr || !callable)
+            {
+                throw std::invalid_argument("string_math: unsupported constexpr operator");
+            }
+
+            std::array<ValueType, Arity> argument_types{};
+            for (std::size_t index = 0; index < Arity; ++index)
+            {
+                argument_types[index] = arguments[index].type();
+            }
+
+            const OverloadResolutionMatch match = resolve_overload_match(callable.overloads, argument_types, m_context->policy().promotion);
+            if (match.overload == nullptr)
+            {
+                throw std::invalid_argument("string_math: no matching overload for constexpr operator");
+            }
+            if (match.ambiguous)
+            {
+                throw std::invalid_argument("string_math: ambiguous constexpr operator overload");
+            }
+
+            return invoke_constexpr_overload(*match.overload, arguments.data(), Arity, m_context->policy(), symbol);
+        }
     }
 
     constexpr bool m_truthy(const MathValue& value) const
@@ -620,8 +737,8 @@ private:
     }
 
     std::string_view m_expression;
-    std::size_t m_position{ 0 };
-    const Context* m_context{ nullptr };
+    std::size_t m_position{0};
+    const Context* m_context{nullptr};
 };
 
 } // namespace string_math::internal

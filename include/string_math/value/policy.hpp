@@ -31,12 +31,4 @@ struct EvaluationPolicy
     NarrowingPolicy narrowing{NarrowingPolicy::Allow};
 };
 
-enum class BinaryPolicyKind
-{
-    None,
-    IntegralAddOverflow,
-    IntegralSubtractOverflow,
-    IntegralMultiplyOverflow
-};
-
 } // namespace string_math

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <functional>
 #include <set>
 #include <unordered_map>
@@ -23,6 +24,20 @@ Result<Operation> try_optimize_operation(const BoundOperation& operation);
 
 namespace internal
 {
+
+inline bool has_overload_arity(std::span<const CallableOverloadView> overloads, std::size_t arity)
+{
+    return std::any_of(overloads.begin(), overloads.end(), [arity](const CallableOverloadView& overload) {
+        return overload.accepts_arity(arity);
+    });
+}
+
+inline bool has_foldable_overload(std::span<const CallableOverloadView> overloads, std::size_t arity)
+{
+    return std::any_of(overloads.begin(), overloads.end(), [arity](const CallableOverloadView& overload) {
+        return overload.accepts_arity(arity) && overload.semantics.has_flag(CallableFlag::Foldable);
+    });
+}
 
 class Parser
 {
@@ -272,7 +287,7 @@ inline Result<int> internal::Parser::m_parse_expression(int min_precedence)
     }
 
     m_skip_spaces();
-    if (min_precedence <= Precedence::Conditional && m_position < m_expression.size() && m_expression[m_position] == '?')
+    if (min_precedence <= internal::k_conditional_precedence && m_position < m_expression.size() && m_expression[m_position] == '?')
     {
         const std::size_t conditional_position = m_position++;
         const auto true_result = m_parse_expression(0);
@@ -294,7 +309,7 @@ inline Result<int> internal::Parser::m_parse_expression(int min_precedence)
         }
 
         ++m_position;
-        const auto false_result = m_parse_expression(Precedence::Conditional);
+        const auto false_result = m_parse_expression(internal::k_conditional_precedence);
         if (!false_result)
         {
             return false_result.error();
@@ -434,10 +449,10 @@ inline Result<int> internal::Parser::m_parse_primary()
             return m_parse_function_call(identifier);
         }
 
-        if (const auto* entry = m_context.find_function(identifier.text);
-            entry != nullptr && internal::has_fixed_function_arity(entry->fixed_overloads, 1))
+        const auto function = m_context.lookup_function(identifier.text);
+        if (function && internal::has_overload_arity(function.overloads, 1))
         {
-            const auto argument_result = m_parse_expression(Precedence::Prefix);
+            const auto argument_result = m_parse_expression(internal::k_implicit_prefix_call_precedence);
             if (!argument_result)
             {
                 return argument_result.error();
@@ -646,53 +661,26 @@ namespace internal
 
 inline bool has_foldable_prefix(const MathContext& context, std::string_view symbol)
 {
-    if (const auto* entry = context.find_prefix_operator(symbol); entry != nullptr)
-    {
-        return std::any_of(entry->overloads.begin(), entry->overloads.end(), [](const auto& overload) {
-            return overload.semantics.has_flag(CallableFlag::Foldable);
-        });
-    }
-    return false;
+    const auto callable = context.lookup_prefix_operator(symbol);
+    return callable && has_foldable_overload(callable.overloads, 1);
 }
 
 inline bool has_foldable_postfix(const MathContext& context, std::string_view symbol)
 {
-    if (const auto* entry = context.find_postfix_operator(symbol); entry != nullptr)
-    {
-        return std::any_of(entry->overloads.begin(), entry->overloads.end(), [](const auto& overload) {
-            return overload.semantics.has_flag(CallableFlag::Foldable);
-        });
-    }
-    return false;
+    const auto callable = context.lookup_postfix_operator(symbol);
+    return callable && has_foldable_overload(callable.overloads, 1);
 }
 
 inline bool has_foldable_infix(const MathContext& context, std::string_view symbol)
 {
-    if (const auto* entry = context.find_infix_operator(symbol); entry != nullptr)
-    {
-        return std::any_of(entry->overloads.begin(), entry->overloads.end(), [](const auto& overload) {
-            return overload.semantics.has_flag(CallableFlag::Foldable);
-        });
-    }
-    return false;
+    const auto callable = context.lookup_infix_operator(symbol);
+    return callable && has_foldable_overload(callable.overloads, 2);
 }
 
 inline bool has_foldable_function(const MathContext& context, std::string_view name, int arity)
 {
-    if (const auto* entry = context.find_function(name); entry != nullptr)
-    {
-        if (internal::has_fixed_function_arity(entry->fixed_overloads, static_cast<std::size_t>(arity)))
-        {
-            return std::any_of(entry->fixed_overloads.begin(), entry->fixed_overloads.end(), [&](const auto& overload) {
-                return overload.arity() == static_cast<std::size_t>(arity) &&
-                    overload.semantics.has_flag(CallableFlag::Foldable);
-            });
-        }
-        return std::any_of(entry->variadic_overloads.begin(), entry->variadic_overloads.end(), [&](const auto& overload) {
-            return overload.min_arity <= static_cast<std::size_t>(arity) && overload.semantics.has_flag(CallableFlag::Foldable);
-        });
-    }
-    return false;
+    const auto callable = context.lookup_function(name);
+    return callable && has_foldable_overload(callable.overloads, static_cast<std::size_t>(arity));
 }
 
 inline Operation make_subtree_operation(const Operation& source, const Node& node, std::vector<Node> child_nodes)
@@ -891,8 +879,8 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                 return operand_result.error();
             }
 
-            const auto* entry = context.find_prefix_operator(node.text);
-            if (entry == nullptr)
+            const auto callable = context.lookup_prefix_operator(node.text);
+            if (!callable)
             {
                 return Error(
                     ErrorKind::NameResolution,
@@ -901,7 +889,9 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                     node.text);
             }
 
-            const auto overload_result = internal::try_resolve_unary_overload(entry->overloads, operand_result.value().type(), node.text);
+            const std::array<ValueType, 1> argument_types{operand_result.value().type()};
+            const auto overload_result =
+                internal::try_resolve_overload(callable.overloads, argument_types, node.text, context.policy().promotion);
             if (!overload_result)
             {
                 return Error(overload_result.error().kind(), overload_result.error().message(), node.span, node.text);
@@ -909,7 +899,18 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
             try
             {
-                return internal::invoke_unary_overload(*overload_result.value(), operand_result.value());
+                const MathValue argument = operand_result.value();
+                const auto invoke_result = internal::invoke_overload(
+                    overload_result.value(),
+                    &argument,
+                    1,
+                    context.policy(),
+                    node.text);
+                if (!invoke_result)
+                {
+                    return Error(invoke_result.error().kind(), invoke_result.error().message(), node.span, node.text);
+                }
+                return invoke_result.value();
             }
             catch (const std::exception& error)
             {
@@ -924,8 +925,8 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                 return operand_result.error();
             }
 
-            const auto* entry = context.find_postfix_operator(node.text);
-            if (entry == nullptr)
+            const auto callable = context.lookup_postfix_operator(node.text);
+            if (!callable)
             {
                 return Error(
                     ErrorKind::NameResolution,
@@ -934,7 +935,9 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                     node.text);
             }
 
-            const auto overload_result = internal::try_resolve_unary_overload(entry->overloads, operand_result.value().type(), node.text);
+            const std::array<ValueType, 1> argument_types{operand_result.value().type()};
+            const auto overload_result =
+                internal::try_resolve_overload(callable.overloads, argument_types, node.text, context.policy().promotion);
             if (!overload_result)
             {
                 return Error(overload_result.error().kind(), overload_result.error().message(), node.span, node.text);
@@ -942,7 +945,18 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
             try
             {
-                return internal::invoke_unary_overload(*overload_result.value(), operand_result.value());
+                const MathValue argument = operand_result.value();
+                const auto invoke_result = internal::invoke_overload(
+                    overload_result.value(),
+                    &argument,
+                    1,
+                    context.policy(),
+                    node.text);
+                if (!invoke_result)
+                {
+                    return Error(invoke_result.error().kind(), invoke_result.error().message(), node.span, node.text);
+                }
+                return invoke_result.value();
             }
             catch (const std::exception& error)
             {
@@ -963,8 +977,8 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                 return right_result.error();
             }
 
-            const auto* entry = context.find_infix_operator(node.text);
-            if (entry == nullptr)
+            const auto callable = context.lookup_infix_operator(node.text);
+            if (!callable)
             {
                 return Error(
                     ErrorKind::NameResolution,
@@ -973,12 +987,12 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                     node.text);
             }
 
-            const auto overload_result = internal::try_resolve_binary_overload(
-                entry->overloads,
+            const std::array<ValueType, 2> argument_types{
                 left_result.value().type(),
                 right_result.value().type(),
-                node.text,
-                context.policy().promotion);
+            };
+            const auto overload_result =
+                internal::try_resolve_overload(callable.overloads, argument_types, node.text, context.policy().promotion);
             if (!overload_result)
             {
                 return Error(overload_result.error().kind(), overload_result.error().message(), node.span, node.text);
@@ -986,12 +1000,21 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
 
             try
             {
-                return internal::invoke_binary_overload(
-                    *overload_result.value(),
+                const std::array<MathValue, 2> arguments{
                     left_result.value(),
                     right_result.value(),
+                };
+                const auto invoke_result = internal::invoke_overload(
+                    overload_result.value(),
+                    arguments.data(),
+                    arguments.size(),
                     context.policy(),
                     node.text);
+                if (!invoke_result)
+                {
+                    return Error(invoke_result.error().kind(), invoke_result.error().message(), node.span, node.text);
+                }
+                return invoke_result.value();
             }
             catch (const std::exception& error)
             {
@@ -1000,8 +1023,8 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
         }
 
         case internal::Node::Kind::FunctionCall: {
-            const auto* entry = context.find_function(node.text);
-            if (entry == nullptr)
+            const auto callable = context.lookup_function(node.text);
+            if (!callable)
             {
                 return Error(
                     ErrorKind::NameResolution,
@@ -1026,46 +1049,31 @@ inline Result<MathValue> try_evaluate_operation(const Operation& operation, cons
                 argument_types.push_back(argument_result.value().type());
             }
 
-            if (internal::has_fixed_function_arity(entry->fixed_overloads, arguments.size()))
+            const auto overload_result =
+                internal::try_resolve_overload(callable.overloads, argument_types, node.text, context.policy().promotion);
+            if (!overload_result)
             {
-                const auto overload_result =
-                    internal::try_resolve_function_overload(entry->fixed_overloads, argument_types, node.text, context.policy().promotion);
-                if (!overload_result)
-                {
-                    return Error(overload_result.error().kind(), overload_result.error().message(), node.span, node.text);
-                }
-
-                try
-                {
-                    return internal::invoke_function_overload(*overload_result.value(), arguments);
-                }
-                catch (const std::exception& error)
-                {
-                    return Error(ErrorKind::Evaluation, error.what(), node.span, node.text);
-                }
+                return Error(overload_result.error().kind(), overload_result.error().message(), node.span, node.text);
             }
 
-            if (!entry->variadic_overloads.empty())
+            try
             {
-                for (const auto& overload : entry->variadic_overloads)
+                const auto invoke_result = internal::invoke_overload(
+                    overload_result.value(),
+                    arguments.data(),
+                    arguments.size(),
+                    context.policy(),
+                    node.text);
+                if (!invoke_result)
                 {
-                    if (arguments.size() < overload.min_arity)
-                    {
-                        continue;
-                    }
-
-                    try
-                    {
-                        return overload.invoke(overload.storage.get(), arguments);
-                    }
-                    catch (const std::exception& error)
-                    {
-                        return Error(ErrorKind::Evaluation, error.what(), node.span, node.text);
-                    }
+                    return Error(invoke_result.error().kind(), invoke_result.error().message(), node.span, node.text);
                 }
+                return invoke_result.value();
             }
-
-            return Error(ErrorKind::Evaluation, "string_math: unsupported function arity", node.span, node.text);
+            catch (const std::exception& error)
+            {
+                return Error(ErrorKind::Evaluation, error.what(), node.span, node.text);
+            }
         }
 
         case internal::Node::Kind::Conditional: {

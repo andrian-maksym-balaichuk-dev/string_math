@@ -8,7 +8,7 @@ namespace string_math
 class MathExpr
 {
 public:
-    explicit MathExpr(std::string expression, MathContext context = MathContext::with_builtins())
+    explicit MathExpr(std::string expression, MathContext context = {})
     : m_expression(std::move(expression)), m_parent_context(std::move(context)),
       m_local_context(m_parent_context, true), m_operation(string_math::try_parse_operation(m_expression, m_local_context).value().operation)
     {}

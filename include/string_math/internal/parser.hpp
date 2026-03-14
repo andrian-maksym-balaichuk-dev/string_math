@@ -16,6 +16,9 @@
 namespace string_math::internal
 {
 
+inline constexpr int k_conditional_precedence = 1;
+inline constexpr int k_implicit_prefix_call_precedence = 40;
+
 // ---------------------------------------------------------------------------
 // String / character utilities
 // ---------------------------------------------------------------------------

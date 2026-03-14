@@ -3,30 +3,17 @@
 #include <string>
 #include <vector>
 
-#include <string_math/value/types.hpp>
-#include <string_math/semantics/semantics.hpp>
+#include <string_math/internal/catalog.hpp>
 
 namespace string_math
 {
 
-struct UnaryOverloadInfo
+struct CallableOverloadInfo
 {
     ValueType result_type{};
-    ValueType argument_type{};
-    CallableSemantics semantics{};
-};
-
-struct BinaryOverloadInfo
-{
-    ValueType result_type{};
-    ValueType left_type{};
-    ValueType right_type{};
-    CallableSemantics semantics{};
-};
-
-struct FunctionOverloadInfo
-{
-    ValueType result_type{};
+    internal::ArityKind arity_kind{internal::ArityKind::Fixed};
+    std::size_t min_arity{0};
+    std::size_t max_arity{0};
     std::vector<ValueType> argument_types;
     CallableSemantics semantics{};
 };
@@ -34,11 +21,7 @@ struct FunctionOverloadInfo
 struct FunctionInfo
 {
     std::string name;
-    std::vector<FunctionOverloadInfo> fixed_overloads;
-    std::vector<UnaryOverloadInfo> unary_overloads;
-    std::vector<BinaryOverloadInfo> binary_overloads;
-    std::vector<std::size_t> variadic_min_arities;
-    std::vector<CallableSemantics> variadic_semantics;
+    std::vector<CallableOverloadInfo> overloads;
 };
 
 struct OperatorInfo
@@ -46,8 +29,7 @@ struct OperatorInfo
     std::string symbol;
     int precedence{0};
     Associativity associativity{Associativity::Left};
-    std::vector<UnaryOverloadInfo> unary_overloads;
-    std::vector<BinaryOverloadInfo> binary_overloads;
+    std::vector<CallableOverloadInfo> overloads;
 };
 
 struct LiteralParserInfo

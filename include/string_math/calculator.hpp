@@ -8,7 +8,7 @@ namespace string_math
 class Calculator
 {
 public:
-    Calculator() : m_context(MathContext::with_builtins()) {}
+    Calculator() = default;
     explicit Calculator(MathContext context) : m_context(std::move(context)) {}
 
     Calculator& set_context(MathContext context)

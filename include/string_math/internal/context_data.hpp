@@ -1,5 +1,4 @@
 #pragma once
-// Do not include this file directly. Use <string_math/string_math.hpp> or individual public headers.
 
 #include <memory>
 #include <optional>
@@ -7,9 +6,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <string_math/internal/catalog.hpp>
 #include <string_math/internal/overload_impl.hpp>
-#include <string_math/semantics/overload.hpp>
-#include <string_math/value/policy.hpp>
 
 namespace string_math::internal
 {
@@ -21,37 +19,30 @@ struct LiteralParserEntry
     fw::function_wrapper<std::optional<MathValue>(std::string_view)> parser;
 };
 
-struct PrefixOperatorEntry
+struct CallableEntry
 {
-    int precedence{ Precedence::Prefix };
-    std::vector<UnaryOverload> overloads;
-};
+    int precedence{0};
+    Associativity associativity{Associativity::Left};
+    std::vector<RuntimeCallableOverload> overloads;
 
-struct PostfixOperatorEntry
-{
-    int precedence{ Precedence::Postfix };
-    std::vector<UnaryOverload> overloads;
-};
-
-struct InfixOperatorEntry
-{
-    int precedence{ Precedence::Additive };
-    Associativity associativity{ Associativity::Left };
-    std::vector<BinaryOverload> overloads;
-};
-
-struct FunctionEntry
-{
-    std::vector<FunctionOverload> fixed_overloads;
-    struct VariadicOverload
+    CollectedCallable collect() const
     {
-        std::size_t min_arity{1};
-        CallableSemantics semantics{};
-        std::shared_ptr<const void> storage;
-        MathValue (*invoke)(const void*, const std::vector<MathValue>&) = nullptr;
-    };
-    std::vector<VariadicOverload> variadic_overloads;
+        CollectedCallable collected;
+        collected.precedence = precedence;
+        collected.associativity = associativity;
+        collected.overloads.reserve(overloads.size());
+        for (const auto& overload : overloads)
+        {
+            collected.overloads.push_back(overload.view());
+        }
+        return collected;
+    }
 };
+
+using PrefixOperatorEntry = CallableEntry;
+using PostfixOperatorEntry = CallableEntry;
+using InfixOperatorEntry = CallableEntry;
+using FunctionEntry = CallableEntry;
 
 struct RuntimeContextData
 {
@@ -62,9 +53,6 @@ struct RuntimeContextData
     std::unordered_map<std::string, PostfixOperatorEntry> m_postfix_operators;
     std::unordered_map<std::string, InfixOperatorEntry> m_infix_operators;
     std::vector<LiteralParserEntry> m_literal_parsers;
-    std::vector<std::string> m_prefix_symbols;
-    std::vector<std::string> m_postfix_symbols;
-    std::vector<std::string> m_infix_symbols;
     EvaluationPolicy m_policy{};
 };
 

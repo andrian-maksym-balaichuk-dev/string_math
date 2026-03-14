@@ -8,7 +8,6 @@
 #include <string_math/expression/evaluate.hpp>
 #include <string_math/expression/expression.hpp>
 #include <string_math/expression/operation.hpp>
-#include <string_math/internal/builtins.hpp>
 #include <string_math/semantics/semantics.hpp>
 #include <string_math/smath.hpp>
 #include <string_math/value/policy.hpp>

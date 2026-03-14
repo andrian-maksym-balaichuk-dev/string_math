@@ -73,7 +73,7 @@ constexpr bool m_sub_overflow(T left, T right, T& output)
 }
 
 template <class T>
-inline bool m_mul_overflow(T left, T right, T& output)
+constexpr bool m_mul_overflow(T left, T right, T& output)
 {
     const long double product = static_cast<long double>(left) * static_cast<long double>(right);
     if (product < static_cast<long double>(std::numeric_limits<T>::lowest()) ||

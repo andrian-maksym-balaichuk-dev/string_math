@@ -12,27 +12,27 @@ template <class T>
 class Result
 {
 public:
-    Result(const T& value) : m_storage(value) {}
-    Result(T&& value) : m_storage(std::move(value)) {}
+    constexpr Result(const T& value) : m_storage(value) {}
+    constexpr Result(T&& value) : m_storage(std::move(value)) {}
     Result(const Error& error) : m_storage(error) {}
     Result(Error&& error) : m_storage(std::move(error)) {}
 
-    bool has_value() const noexcept
+    constexpr bool has_value() const noexcept
     {
         return std::holds_alternative<T>(m_storage);
     }
 
-    bool has_error() const noexcept
+    constexpr bool has_error() const noexcept
     {
         return !has_value();
     }
 
-    explicit operator bool() const noexcept
+    constexpr explicit operator bool() const noexcept
     {
         return has_value();
     }
 
-    T& value() &
+    constexpr T& value() &
     {
         if (has_error())
         {
@@ -41,7 +41,7 @@ public:
         return std::get<T>(m_storage);
     }
 
-    const T& value() const&
+    constexpr const T& value() const&
     {
         if (has_error())
         {
@@ -50,7 +50,7 @@ public:
         return std::get<T>(m_storage);
     }
 
-    T&& value() &&
+    constexpr T&& value() &&
     {
         if (has_error())
         {
