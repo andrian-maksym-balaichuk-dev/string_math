@@ -13,8 +13,7 @@
 #include <utility>
 #include <vector>
 
-#include <string_math/internal/catalog.hpp>
-#include <string_math/internal/type_conversion.hpp>
+#include <string_math/callable.hpp>
 #include <string_math/value/value.hpp>
 
 namespace string_math::internal
@@ -28,10 +27,10 @@ struct RuntimeCallableOverload
     std::size_t max_arity{0};
     std::vector<ValueType> arg_types;
     CallableSemantics semantics{};
-    std::shared_ptr<const void> state_owner;
-    callable_invoke_fn invoke{nullptr};
-    std::shared_ptr<const void> policy_state_owner;
-    callable_policy_fn policy_invoke{nullptr};
+    std::shared_ptr<callable_invoke_wrapper> invoke_owner;
+    std::shared_ptr<raw_callable_invoke_wrapper> raw_invoke_owner;
+    std::shared_ptr<callable_policy_wrapper> policy_owner;
+    std::shared_ptr<raw_callable_policy_wrapper> raw_policy_owner;
 
     CallableOverloadView view() const
     {
@@ -42,13 +41,47 @@ struct RuntimeCallableOverload
             max_arity,
             std::span<const ValueType>(arg_types.data(), arg_types.size()),
             semantics,
-            state_owner.get(),
-            invoke,
-            policy_state_owner.get(),
-            policy_invoke,
+            invoke_owner ? *invoke_owner : callable_invoke_wrapper{},
+            raw_invoke_owner ? *raw_invoke_owner : raw_callable_invoke_wrapper{},
+            policy_owner ? *policy_owner : callable_policy_wrapper{},
+            raw_policy_owner ? *raw_policy_owner : raw_callable_policy_wrapper{},
         };
     }
 };
+
+template <class F>
+inline std::shared_ptr<callable_invoke_wrapper> make_invoke_owner(F&& function)
+{
+    return std::make_shared<callable_invoke_wrapper>(std::forward<F>(function));
+}
+
+inline std::shared_ptr<callable_invoke_wrapper> make_invoke_owner(callable_invoke_view function)
+{
+    return std::make_shared<callable_invoke_wrapper>(std::move(function));
+}
+
+template <class F>
+inline std::shared_ptr<raw_callable_invoke_wrapper> make_raw_invoke_owner(F&& function)
+{
+    return std::make_shared<raw_callable_invoke_wrapper>(std::forward<F>(function));
+}
+
+template <class F>
+inline std::shared_ptr<callable_policy_wrapper> make_policy_owner(F&& function)
+{
+    return std::make_shared<callable_policy_wrapper>(std::forward<F>(function));
+}
+
+inline std::shared_ptr<callable_policy_wrapper> make_policy_owner(callable_policy_view function)
+{
+    return std::make_shared<callable_policy_wrapper>(std::move(function));
+}
+
+template <class F>
+inline std::shared_ptr<raw_callable_policy_wrapper> make_raw_policy_owner(F&& function)
+{
+    return std::make_shared<raw_callable_policy_wrapper>(std::forward<F>(function));
+}
 
 template <class ArgsTuple, std::size_t... Indices>
 constexpr auto m_make_signature_arg_type_array(std::index_sequence<Indices...>)
@@ -76,11 +109,10 @@ inline constexpr bool signature_types_supported =
 template <class Traits, class Wrapper, std::size_t... Indices>
 constexpr MathValue m_invoke_fixed_callable_impl(
     const Wrapper& wrapper,
-    const MathValue* arguments,
-    std::size_t count,
+    MathArgsView arguments,
     std::index_sequence<Indices...>)
 {
-    if (count != Traits::arity)
+    if (arguments.size() != Traits::arity)
     {
         throw std::invalid_argument("string_math: callable argument count mismatch");
     }
@@ -90,15 +122,14 @@ constexpr MathValue m_invoke_fixed_callable_impl(
 }
 
 template <class Traits, class Handler, std::size_t... Indices>
-inline Result<MathValue> m_invoke_policy_handler_impl(
+constexpr Result<MathValue> m_invoke_policy_handler_impl(
     const Handler& handler,
-    const MathValue* arguments,
-    std::size_t count,
+    MathArgsView arguments,
     const EvaluationPolicy& policy,
     std::string_view token,
     std::index_sequence<Indices...>)
 {
-    if (count != Traits::arity)
+    if (arguments.size() != Traits::arity)
     {
         return Error(ErrorKind::Evaluation, "string_math: callable argument count mismatch", {}, std::string(token));
     }
@@ -135,8 +166,8 @@ inline RuntimeCallableOverload make_fixed_callable_overload(F&& function, Callab
     static_assert(is_supported_value_type_v<result_t>, "unsupported callable result type");
     static_assert(signature_types_supported<Sig>, "unsupported callable argument type");
 
-    using wrapper_t = fw::function_wrapper<Sig>;
-    auto storage = std::make_shared<wrapper_t>(std::forward<F>(function));
+    using wrapper_t = fw::move_only_function_wrapper<Sig>;
+    auto typed_storage = std::make_shared<wrapper_t>(std::forward<F>(function));
 
     return RuntimeCallableOverload{
         value_type_of<result_t>::value,
@@ -145,13 +176,13 @@ inline RuntimeCallableOverload make_fixed_callable_overload(F&& function, Callab
         traits::arity,
         make_signature_arg_types_vector<Sig>(),
         semantics,
-        storage,
-        [](const void* raw_state, const MathValue* arguments, std::size_t count) {
-            const auto& wrapper = *static_cast<const wrapper_t*>(raw_state);
-            return m_invoke_fixed_callable_impl<traits>(wrapper, arguments, count, std::make_index_sequence<traits::arity>{});
-        },
+        make_invoke_owner([typed_storage](MathArgsView arguments) {
+            const auto& wrapper = *typed_storage;
+            return m_invoke_fixed_callable_impl<traits>(wrapper, arguments, std::make_index_sequence<traits::arity>{});
+        }),
         {},
-        nullptr,
+        {},
+        {},
     };
 }
 
@@ -166,11 +197,10 @@ inline RuntimeCallableOverload make_fixed_callable_overload_with_policy(
     static_assert(is_supported_value_type_v<result_t>, "unsupported callable result type");
     static_assert(signature_types_supported<Sig>, "unsupported callable argument type");
 
-    using wrapper_t = fw::function_wrapper<Sig>;
-    using policy_wrapper_t = std::decay_t<PolicyF>;
+    using wrapper_t = fw::move_only_function_wrapper<Sig>;
 
-    auto storage = std::make_shared<wrapper_t>(std::forward<F>(function));
-    auto policy_storage = std::make_shared<policy_wrapper_t>(std::forward<PolicyF>(policy_handler));
+    auto typed_storage = std::make_shared<wrapper_t>(std::forward<F>(function));
+    auto policy_storage = std::make_shared<std::decay_t<PolicyF>>(std::forward<PolicyF>(policy_handler));
 
     return RuntimeCallableOverload{
         value_type_of<result_t>::value,
@@ -179,26 +209,87 @@ inline RuntimeCallableOverload make_fixed_callable_overload_with_policy(
         traits::arity,
         make_signature_arg_types_vector<Sig>(),
         semantics,
-        storage,
-        [](const void* raw_state, const MathValue* arguments, std::size_t count) {
-            const auto& wrapper = *static_cast<const wrapper_t*>(raw_state);
-            return m_invoke_fixed_callable_impl<traits>(wrapper, arguments, count, std::make_index_sequence<traits::arity>{});
-        },
-        policy_storage,
-        [](const void* raw_state,
-           const MathValue* arguments,
-           std::size_t count,
-           const EvaluationPolicy& policy,
-           std::string_view token) {
-            const auto& handler = *static_cast<const policy_wrapper_t*>(raw_state);
+        make_invoke_owner([typed_storage](MathArgsView arguments) {
+            const auto& wrapper = *typed_storage;
+            return m_invoke_fixed_callable_impl<traits>(wrapper, arguments, std::make_index_sequence<traits::arity>{});
+        }),
+        {},
+        make_policy_owner([policy_storage](
+                              MathArgsView arguments,
+                              const EvaluationPolicy& policy,
+                              std::string_view token) {
+            const auto& handler = *policy_storage;
             return m_invoke_policy_handler_impl<traits>(
                 handler,
                 arguments,
-                count,
                 policy,
                 token,
                 std::make_index_sequence<traits::arity>{});
-        },
+        }),
+        {},
+    };
+}
+
+template <class Sig, class Wrapper>
+inline RuntimeCallableOverload make_fixed_wrapper_overload(
+    std::shared_ptr<Wrapper> wrapper,
+    CallableSemantics semantics = {})
+{
+    using traits = signature_traits<Sig>;
+    using result_t = typename traits::result_type;
+    static_assert(is_supported_value_type_v<result_t>, "unsupported callable result type");
+    static_assert(signature_types_supported<Sig>, "unsupported callable argument type");
+
+    return RuntimeCallableOverload{
+        value_type_of<result_t>::value,
+        ArityKind::Fixed,
+        traits::arity,
+        traits::arity,
+        make_signature_arg_types_vector<Sig>(),
+        semantics,
+        make_invoke_owner([wrapper = std::move(wrapper)](MathArgsView arguments) {
+            return m_invoke_fixed_callable_impl<traits>(*wrapper, arguments, std::make_index_sequence<traits::arity>{});
+        }),
+        {},
+        {},
+        {},
+    };
+}
+
+template <class Sig, class Wrapper, class PolicyHandler>
+inline RuntimeCallableOverload make_fixed_wrapper_overload_with_policy(
+    std::shared_ptr<Wrapper> wrapper,
+    std::shared_ptr<PolicyHandler> policy_handler,
+    CallableSemantics semantics = {})
+{
+    using traits = signature_traits<Sig>;
+    using result_t = typename traits::result_type;
+    static_assert(is_supported_value_type_v<result_t>, "unsupported callable result type");
+    static_assert(signature_types_supported<Sig>, "unsupported callable argument type");
+
+    return RuntimeCallableOverload{
+        value_type_of<result_t>::value,
+        ArityKind::Fixed,
+        traits::arity,
+        traits::arity,
+        make_signature_arg_types_vector<Sig>(),
+        semantics,
+        make_invoke_owner([wrapper = std::move(wrapper)](MathArgsView arguments) {
+            return m_invoke_fixed_callable_impl<traits>(*wrapper, arguments, std::make_index_sequence<traits::arity>{});
+        }),
+        {},
+        make_policy_owner([policy_handler = std::move(policy_handler)](
+                              MathArgsView arguments,
+                              const EvaluationPolicy& policy,
+                              std::string_view token) {
+            return m_invoke_policy_handler_impl<traits>(
+                *policy_handler,
+                arguments,
+                policy,
+                token,
+                std::make_index_sequence<traits::arity>{});
+        }),
+        {},
     };
 }
 
@@ -209,8 +300,8 @@ inline RuntimeCallableOverload make_variadic_callable_overload(
     F&& function,
     CallableSemantics semantics = {})
 {
-    using wrapper_t = fw::function_wrapper<MathValue(const std::vector<MathValue>&)>;
-    auto storage = std::make_shared<wrapper_t>(std::forward<F>(function));
+    using wrapper_t = fw::move_only_function_wrapper<MathValue(const std::vector<MathValue>&)>;
+    auto typed_storage = std::make_shared<wrapper_t>(std::forward<F>(function));
 
     return RuntimeCallableOverload{
         ValueType::Int,
@@ -219,13 +310,13 @@ inline RuntimeCallableOverload make_variadic_callable_overload(
         max_arity,
         {},
         semantics,
-        storage,
-        [](const void* raw_state, const MathValue* arguments, std::size_t count) {
-            const auto& wrapper = *static_cast<const wrapper_t*>(raw_state);
-            return wrapper(std::vector<MathValue>(arguments, arguments + count));
-        },
+        make_invoke_owner([typed_storage](MathArgsView arguments) {
+            const auto& wrapper = *typed_storage;
+            return wrapper(std::vector<MathValue>(arguments.begin(), arguments.end()));
+        }),
         {},
-        nullptr,
+        {},
+        {},
     };
 }
 
@@ -236,8 +327,8 @@ inline RuntimeCallableOverload make_typed_variadic_callable_overload(
     F&& function,
     CallableSemantics semantics = {})
 {
-    using wrapper_t = fw::function_wrapper<MathValue(const std::vector<T>&)>;
-    auto storage = std::make_shared<wrapper_t>(std::forward<F>(function));
+    using wrapper_t = fw::move_only_function_wrapper<MathValue(const std::vector<T>&)>;
+    auto typed_storage = std::make_shared<wrapper_t>(std::forward<F>(function));
 
     return RuntimeCallableOverload{
         value_type_of<T>::value,
@@ -246,19 +337,19 @@ inline RuntimeCallableOverload make_typed_variadic_callable_overload(
         max_arity,
         {value_type_of<T>::value},
         semantics,
-        storage,
-        [](const void* raw_state, const MathValue* arguments, std::size_t count) {
-            const auto& wrapper = *static_cast<const wrapper_t*>(raw_state);
+        make_invoke_owner([typed_storage](MathArgsView arguments) {
+            const auto& wrapper = *typed_storage;
             std::vector<T> converted;
-            converted.reserve(count);
-            for (std::size_t index = 0; index < count; ++index)
+            converted.reserve(arguments.size());
+            for (std::size_t index = 0; index < arguments.size(); ++index)
             {
                 converted.push_back(arguments[index].template cast<T>());
             }
             return wrapper(converted);
-        },
+        }),
         {},
-        nullptr,
+        {},
+        {},
     };
 }
 
@@ -449,11 +540,20 @@ inline Result<MathValue> invoke_overload(
     const EvaluationPolicy& policy,
     std::string_view token)
 {
-    if (overload.policy_invoke != nullptr)
+    const MathArgsView args_view(arguments, count);
+    if (overload.policy_invoke)
     {
-        return overload.policy_invoke(overload.policy_state, arguments, count, policy, token);
+        return overload.policy_invoke(args_view, policy, token);
     }
-    return overload.invoke(overload.state, arguments, count);
+    if (overload.raw_policy_invoke)
+    {
+        return overload.raw_policy_invoke(arguments, count, policy, token);
+    }
+    if (overload.raw_invoke)
+    {
+        return overload.raw_invoke(arguments, count);
+    }
+    return overload.invoke(args_view);
 }
 
 template <class T, class F>

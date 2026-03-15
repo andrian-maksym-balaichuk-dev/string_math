@@ -9,7 +9,7 @@
 
 #include <string_math/internal/overload_impl.hpp>
 #include <string_math/internal/parser.hpp>
-#include <string_math/internal/static_context_data.hpp>
+#include <string_math/internal/context_data.hpp>
 #include <string_math/value/value.hpp>
 
 namespace string_math::internal

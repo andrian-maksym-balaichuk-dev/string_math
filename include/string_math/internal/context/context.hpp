@@ -6,10 +6,10 @@
 #include <string_view>
 #include <vector>
 
+#include <../internal/callable.hpp>
+#include <../internal/value.hpp>
 #include <string_math/internal/context_data.hpp>
 #include <string_math/internal/parser.hpp>
-#include <string_math/semantics/overload.hpp>
-#include <string_math/value/value.hpp>
 
 namespace string_math
 {
@@ -26,11 +26,11 @@ namespace internal
 
 #if STRING_MATH_HAS_CONSTEXPR_EVALUATION
 template <
-    std::size_t VariableCount = 0,
-    std::size_t InfixCount = 0,
-    std::size_t FunctionCount = 0,
-    std::size_t PrefixCount = 0,
-    std::size_t PostfixCount = 0>
+    std::size_t VariableCapacity = 100,
+    std::size_t InfixCapacity = 100,
+    std::size_t FunctionCapacity = 100,
+    std::size_t PrefixCapacity = 100,
+    std::size_t PostfixCapacity = 100>
 class StaticMathContext;
 #endif
 
@@ -100,28 +100,6 @@ public:
     MathContext& set_value(const char (&name)[NameSize], T value)
     {
         return set_value(std::string_view(name, NameSize - 1), MathValue(value));
-    }
-
-    MathContext& add_variable(std::string_view name, MathValue value)
-    {
-        return detail_set_value(name, value);
-    }
-
-    template <std::size_t NameSize, class T>
-    MathContext& add_variable(const char (&name)[NameSize], T value)
-    {
-        return add_variable(std::string_view(name, NameSize - 1), MathValue(value));
-    }
-
-    MathContext& register_variable(std::string_view name, MathValue value)
-    {
-        return detail_set_value(name, value);
-    }
-
-    template <std::size_t NameSize, class T>
-    MathContext& register_variable(const char (&name)[NameSize], T value)
-    {
-        return register_variable(std::string_view(name, NameSize - 1), MathValue(value));
     }
 
     template <class Sig, class F>
@@ -194,6 +172,32 @@ public:
     }
 #endif
 
+    template <class... WrapperArgs>
+    MathContext& add_function(
+        std::string_view name,
+        fw::function_wrapper<WrapperArgs...> function,
+        CallableSemantics semantics = {})
+    {
+        return m_add_wrapped_function(
+            name,
+            std::move(function),
+            semantics,
+            typename fw::function_wrapper<WrapperArgs...>::signatures_type{});
+    }
+
+    template <class... WrapperArgs>
+    MathContext& add_function(
+        std::string_view name,
+        fw::move_only_function_wrapper<WrapperArgs...> function,
+        CallableSemantics semantics = {})
+    {
+        return m_add_wrapped_function(
+            name,
+            std::move(function),
+            semantics,
+            typename fw::move_only_function_wrapper<WrapperArgs...>::signatures_type{});
+    }
+
     template <class... Sigs, class F>
     MathContext& add_function_overloads(std::string_view name, F&& function, CallableSemantics semantics = {})
     {
@@ -227,22 +231,118 @@ public:
         F&& function,
         CallableSemantics semantics = {})
     {
+        return add_variadic_function(name, min_arity, internal::k_unbounded_arity, std::forward<F>(function), semantics);
+    }
+
+    template <auto Function>
+    MathContext& add_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        CallableSemantics semantics = {})
+    {
+        return add_variadic_function(name, min_arity, internal::k_unbounded_arity, Function, semantics);
+    }
+
+    template <class F>
+    MathContext& add_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        F&& function,
+        CallableSemantics semantics = {})
+    {
         auto& entry = m_data->m_functions[std::string(name)];
         internal::upsert_overload(
             entry.overloads,
-            internal::make_variadic_callable_overload(min_arity, internal::k_unbounded_arity, std::forward<F>(function), semantics));
+            internal::make_variadic_callable_overload(min_arity, max_arity, std::forward<F>(function), semantics));
         return *this;
     }
 
-    MathContext& add_generic_function(
+    template <auto Function>
+    MathContext& add_variadic_function(
         std::string_view name,
-        internal::callable_invoke_fn invoke,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        CallableSemantics semantics = {})
+    {
+        return add_variadic_function(name, min_arity, max_arity, Function, semantics);
+    }
+
+    template <class Invoke, class PolicyInvoke = MathPolicyCallable>
+        requires(
+            (std::is_same_v<std::decay_t<Invoke>, MathCallable> || std::is_same_v<std::decay_t<Invoke>, RawMathCallable>) &&
+            (std::is_same_v<std::decay_t<PolicyInvoke>, MathPolicyCallable> ||
+                std::is_same_v<std::decay_t<PolicyInvoke>, RawMathPolicyCallable>))
+    MathContext& add_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        Invoke&& invoke,
+        ValueType result_type,
+        CallableSemantics semantics = {},
+        PolicyInvoke&& policy_invoke = {})
+    {
+        return add_variadic_function(
+            name,
+            min_arity,
+            internal::k_unbounded_arity,
+            std::forward<Invoke>(invoke),
+            result_type,
+            semantics,
+            std::forward<PolicyInvoke>(policy_invoke));
+    }
+
+    template <class Invoke, class PolicyInvoke = MathPolicyCallable>
+        requires(
+            (std::is_same_v<std::decay_t<Invoke>, MathCallable> || std::is_same_v<std::decay_t<Invoke>, RawMathCallable>) &&
+            (std::is_same_v<std::decay_t<PolicyInvoke>, MathPolicyCallable> ||
+                std::is_same_v<std::decay_t<PolicyInvoke>, RawMathPolicyCallable>))
+    MathContext& add_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        Invoke&& invoke,
+        ValueType result_type,
+        CallableSemantics semantics = {},
+        PolicyInvoke&& policy_invoke = {})
+    {
+        const auto invoke_pack = m_make_erased_invoke_owner(std::forward<Invoke>(invoke));
+        const auto policy_pack = m_make_erased_policy_owner(std::forward<PolicyInvoke>(policy_invoke));
+
+        auto& entry = m_data->m_functions[std::string(name)];
+        internal::upsert_overload(
+            entry.overloads,
+            internal::RuntimeCallableOverload{
+                result_type,
+                internal::ArityKind::Variadic,
+                min_arity,
+                max_arity,
+                {},
+                semantics,
+                invoke_pack.invoke_owner,
+                invoke_pack.raw_invoke_owner,
+                policy_pack.policy_owner,
+                policy_pack.raw_policy_owner,
+            });
+        return *this;
+    }
+
+    template <class Invoke, class PolicyInvoke = MathPolicyCallable>
+        requires(
+            (std::is_same_v<std::decay_t<Invoke>, MathCallable> || std::is_same_v<std::decay_t<Invoke>, RawMathCallable>) &&
+            (std::is_same_v<std::decay_t<PolicyInvoke>, MathPolicyCallable> ||
+                std::is_same_v<std::decay_t<PolicyInvoke>, RawMathPolicyCallable>))
+    MathContext& add_function(
+        std::string_view name,
+        Invoke&& invoke,
         std::size_t min_arity,
         std::size_t max_arity,
         ValueType result_type = ValueType::Double,
         CallableSemantics semantics = {},
-        internal::callable_policy_fn policy_invoke = nullptr)
+        PolicyInvoke&& policy_invoke = {})
     {
+        const auto invoke_pack = m_make_erased_invoke_owner(std::forward<Invoke>(invoke));
+        const auto policy_pack = m_make_erased_policy_owner(std::forward<PolicyInvoke>(policy_invoke));
+
         auto& entry = m_data->m_functions[std::string(name)];
         internal::upsert_overload(
             entry.overloads,
@@ -253,10 +353,10 @@ public:
                 max_arity,
                 {},
                 semantics,
-                {},
-                invoke,
-                {},
-                policy_invoke,
+                invoke_pack.invoke_owner,
+                invoke_pack.raw_invoke_owner,
+                policy_pack.policy_owner,
+                policy_pack.raw_policy_owner,
             });
         return *this;
     }
@@ -268,11 +368,47 @@ public:
         F&& function,
         CallableSemantics semantics = {})
     {
+        return add_variadic_function_for<T>(
+            name,
+            min_arity,
+            internal::k_unbounded_arity,
+            std::forward<F>(function),
+            semantics);
+    }
+
+    template <class T, auto Function>
+    MathContext& add_variadic_function_for(
+        std::string_view name,
+        std::size_t min_arity,
+        CallableSemantics semantics = {})
+    {
+        return add_variadic_function_for<T>(name, min_arity, internal::k_unbounded_arity, Function, semantics);
+    }
+
+    template <class T, auto Function>
+    MathContext& add_variadic_function_for(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        CallableSemantics semantics = {})
+    {
+        return add_variadic_function_for<T>(name, min_arity, max_arity, Function, semantics);
+    }
+
+    template <class T, class F>
+    MathContext& add_variadic_function_for(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        F&& function,
+        CallableSemantics semantics = {})
+    {
         auto typed_function = std::decay_t<F>(std::forward<F>(function));
         return detail_add_typed_variadic_function<T>(
             name,
             min_arity,
-            [typed_function](const std::vector<T>& arguments) mutable -> MathValue {
+            max_arity,
+            [typed_function](const std::vector<T>& arguments) -> MathValue {
                 return MathValue(typed_function(arguments));
             },
             semantics);
@@ -288,6 +424,59 @@ public:
         return add_variadic_function(name, min_arity, std::forward<F>(function), semantics);
     }
 
+    template <auto Function>
+    MathContext& register_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        CallableSemantics semantics = {})
+    {
+        return add_variadic_function<Function>(name, min_arity, semantics);
+    }
+
+    template <class F>
+    MathContext& register_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        F&& function,
+        CallableSemantics semantics = {})
+    {
+        return add_variadic_function(name, min_arity, max_arity, std::forward<F>(function), semantics);
+    }
+
+    template <auto Function>
+    MathContext& register_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        CallableSemantics semantics = {})
+    {
+        return add_variadic_function<Function>(name, min_arity, max_arity, semantics);
+    }
+
+    MathContext& register_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        internal::callable_invoke_wrapper invoke,
+        ValueType result_type,
+        CallableSemantics semantics = {},
+        internal::callable_policy_wrapper policy_invoke = {})
+    {
+        return add_variadic_function(name, min_arity, std::move(invoke), result_type, semantics, std::move(policy_invoke));
+    }
+
+    MathContext& register_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        internal::callable_invoke_wrapper invoke,
+        ValueType result_type,
+        CallableSemantics semantics = {},
+        internal::callable_policy_wrapper policy_invoke = {})
+    {
+        return add_variadic_function(name, min_arity, max_arity, std::move(invoke), result_type, semantics, std::move(policy_invoke));
+    }
+
     template <class T, class F>
     MathContext& register_variadic_function_for(
         std::string_view name,
@@ -296,6 +485,36 @@ public:
         CallableSemantics semantics = {})
     {
         return add_variadic_function_for<T>(name, min_arity, std::forward<F>(function), semantics);
+    }
+
+    template <class T, auto Function>
+    MathContext& register_variadic_function_for(
+        std::string_view name,
+        std::size_t min_arity,
+        CallableSemantics semantics = {})
+    {
+        return add_variadic_function_for<T, Function>(name, min_arity, semantics);
+    }
+
+    template <class T, class F>
+    MathContext& register_variadic_function_for(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        F&& function,
+        CallableSemantics semantics = {})
+    {
+        return add_variadic_function_for<T>(name, min_arity, max_arity, std::forward<F>(function), semantics);
+    }
+
+    template <class T, auto Function>
+    MathContext& register_variadic_function_for(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        CallableSemantics semantics = {})
+    {
+        return add_variadic_function_for<T, Function>(name, min_arity, max_arity, semantics);
     }
 
     template <class F>
@@ -310,6 +529,46 @@ public:
         return copy;
     }
 
+    template <class F>
+    MathContext with_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        F&& function,
+        CallableSemantics semantics = {}) const
+    {
+        MathContext copy(*this);
+        copy.add_variadic_function(name, min_arity, max_arity, std::forward<F>(function), semantics);
+        return copy;
+    }
+
+    MathContext with_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        internal::callable_invoke_wrapper invoke,
+        ValueType result_type,
+        CallableSemantics semantics = {},
+        internal::callable_policy_wrapper policy_invoke = {}) const
+    {
+        MathContext copy(*this);
+        copy.add_variadic_function(name, min_arity, std::move(invoke), result_type, semantics, std::move(policy_invoke));
+        return copy;
+    }
+
+    MathContext with_variadic_function(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        internal::callable_invoke_wrapper invoke,
+        ValueType result_type,
+        CallableSemantics semantics = {},
+        internal::callable_policy_wrapper policy_invoke = {}) const
+    {
+        MathContext copy(*this);
+        copy.add_variadic_function(name, min_arity, max_arity, std::move(invoke), result_type, semantics, std::move(policy_invoke));
+        return copy;
+    }
+
     template <class T, class F>
     MathContext with_variadic_function_for(
         std::string_view name,
@@ -319,6 +578,19 @@ public:
     {
         MathContext copy(*this);
         copy.template add_variadic_function_for<T>(name, min_arity, std::forward<F>(function), semantics);
+        return copy;
+    }
+
+    template <class T, class F>
+    MathContext with_variadic_function_for(
+        std::string_view name,
+        std::size_t min_arity,
+        std::size_t max_arity,
+        F&& function,
+        CallableSemantics semantics = {}) const
+    {
+        MathContext copy(*this);
+        copy.template add_variadic_function_for<T>(name, min_arity, max_arity, std::forward<F>(function), semantics);
         return copy;
     }
 
@@ -335,14 +607,22 @@ public:
         return *this;
     }
 
-    MathContext& add_generic_prefix_operator(
+    template <class Invoke, class PolicyInvoke = MathPolicyCallable>
+        requires(
+            (std::is_same_v<std::decay_t<Invoke>, MathCallable> || std::is_same_v<std::decay_t<Invoke>, RawMathCallable>) &&
+            (std::is_same_v<std::decay_t<PolicyInvoke>, MathPolicyCallable> ||
+                std::is_same_v<std::decay_t<PolicyInvoke>, RawMathPolicyCallable>))
+    MathContext& add_prefix_operator(
         std::string_view symbol,
         int precedence,
-        internal::callable_invoke_fn invoke,
+        Invoke&& invoke,
         ValueType result_type = ValueType::Double,
         CallableSemantics semantics = {},
-        internal::callable_policy_fn policy_invoke = nullptr)
+        PolicyInvoke&& policy_invoke = {})
     {
+        const auto invoke_pack = m_make_erased_invoke_owner(std::forward<Invoke>(invoke));
+        const auto policy_pack = m_make_erased_policy_owner(std::forward<PolicyInvoke>(policy_invoke));
+
         auto& entry = m_data->m_prefix_operators[std::string(symbol)];
         entry.precedence = precedence;
         internal::upsert_overload(
@@ -354,10 +634,10 @@ public:
                 1,
                 {},
                 semantics,
-                {},
-                invoke,
-                {},
-                policy_invoke,
+                invoke_pack.invoke_owner,
+                invoke_pack.raw_invoke_owner,
+                policy_pack.policy_owner,
+                policy_pack.raw_policy_owner,
             });
         return *this;
     }
@@ -438,6 +718,36 @@ public:
     }
 #endif
 
+    template <class... WrapperArgs>
+    MathContext& add_prefix_operator(
+        std::string_view symbol,
+        fw::function_wrapper<WrapperArgs...> function,
+        int precedence,
+        CallableSemantics semantics = {})
+    {
+        return m_add_wrapped_prefix(
+            symbol,
+            std::move(function),
+            precedence,
+            semantics,
+            typename fw::function_wrapper<WrapperArgs...>::signatures_type{});
+    }
+
+    template <class... WrapperArgs>
+    MathContext& add_prefix_operator(
+        std::string_view symbol,
+        fw::move_only_function_wrapper<WrapperArgs...> function,
+        int precedence,
+        CallableSemantics semantics = {})
+    {
+        return m_add_wrapped_prefix(
+            symbol,
+            std::move(function),
+            precedence,
+            semantics,
+            typename fw::move_only_function_wrapper<WrapperArgs...>::signatures_type{});
+    }
+
     template <class... Sigs, class F>
     MathContext& add_prefix_operator_overloads(
         std::string_view symbol,
@@ -477,14 +787,22 @@ public:
         return *this;
     }
 
-    MathContext& add_generic_postfix_operator(
+    template <class Invoke, class PolicyInvoke = MathPolicyCallable>
+        requires(
+            (std::is_same_v<std::decay_t<Invoke>, MathCallable> || std::is_same_v<std::decay_t<Invoke>, RawMathCallable>) &&
+            (std::is_same_v<std::decay_t<PolicyInvoke>, MathPolicyCallable> ||
+                std::is_same_v<std::decay_t<PolicyInvoke>, RawMathPolicyCallable>))
+    MathContext& add_postfix_operator(
         std::string_view symbol,
         int precedence,
-        internal::callable_invoke_fn invoke,
+        Invoke&& invoke,
         ValueType result_type = ValueType::Double,
         CallableSemantics semantics = {},
-        internal::callable_policy_fn policy_invoke = nullptr)
+        PolicyInvoke&& policy_invoke = {})
     {
+        const auto invoke_pack = m_make_erased_invoke_owner(std::forward<Invoke>(invoke));
+        const auto policy_pack = m_make_erased_policy_owner(std::forward<PolicyInvoke>(policy_invoke));
+
         auto& entry = m_data->m_postfix_operators[std::string(symbol)];
         entry.precedence = precedence;
         internal::upsert_overload(
@@ -496,10 +814,10 @@ public:
                 1,
                 {},
                 semantics,
-                {},
-                invoke,
-                {},
-                policy_invoke,
+                invoke_pack.invoke_owner,
+                invoke_pack.raw_invoke_owner,
+                policy_pack.policy_owner,
+                policy_pack.raw_policy_owner,
             });
         return *this;
     }
@@ -580,6 +898,36 @@ public:
     }
 #endif
 
+    template <class... WrapperArgs>
+    MathContext& add_postfix_operator(
+        std::string_view symbol,
+        fw::function_wrapper<WrapperArgs...> function,
+        int precedence,
+        CallableSemantics semantics = {})
+    {
+        return m_add_wrapped_postfix(
+            symbol,
+            std::move(function),
+            precedence,
+            semantics,
+            typename fw::function_wrapper<WrapperArgs...>::signatures_type{});
+    }
+
+    template <class... WrapperArgs>
+    MathContext& add_postfix_operator(
+        std::string_view symbol,
+        fw::move_only_function_wrapper<WrapperArgs...> function,
+        int precedence,
+        CallableSemantics semantics = {})
+    {
+        return m_add_wrapped_postfix(
+            symbol,
+            std::move(function),
+            precedence,
+            semantics,
+            typename fw::move_only_function_wrapper<WrapperArgs...>::signatures_type{});
+    }
+
     template <class... Sigs, class F>
     MathContext& add_postfix_operator_overloads(
         std::string_view symbol,
@@ -625,15 +973,23 @@ public:
         return *this;
     }
 
-    MathContext& add_generic_infix_operator(
+    template <class Invoke, class PolicyInvoke = MathPolicyCallable>
+        requires(
+            (std::is_same_v<std::decay_t<Invoke>, MathCallable> || std::is_same_v<std::decay_t<Invoke>, RawMathCallable>) &&
+            (std::is_same_v<std::decay_t<PolicyInvoke>, MathPolicyCallable> ||
+                std::is_same_v<std::decay_t<PolicyInvoke>, RawMathPolicyCallable>))
+    MathContext& add_infix_operator(
         std::string_view symbol,
         int precedence,
         Associativity associativity,
-        internal::callable_invoke_fn invoke,
+        Invoke&& invoke,
         ValueType result_type = ValueType::Double,
         CallableSemantics semantics = {},
-        internal::callable_policy_fn policy_invoke = nullptr)
+        PolicyInvoke&& policy_invoke = {})
     {
+        const auto invoke_pack = m_make_erased_invoke_owner(std::forward<Invoke>(invoke));
+        const auto policy_pack = m_make_erased_policy_owner(std::forward<PolicyInvoke>(policy_invoke));
+
         auto& entry = m_data->m_infix_operators[std::string(symbol)];
         entry.precedence = precedence;
         entry.associativity = associativity;
@@ -646,10 +1002,10 @@ public:
                 2,
                 {},
                 semantics,
-                {},
-                invoke,
-                {},
-                policy_invoke,
+                invoke_pack.invoke_owner,
+                invoke_pack.raw_invoke_owner,
+                policy_pack.policy_owner,
+                policy_pack.raw_policy_owner,
             });
         return *this;
     }
@@ -760,6 +1116,40 @@ public:
     }
 #endif
 
+    template <class... WrapperArgs>
+    MathContext& add_infix_operator(
+        std::string_view symbol,
+        fw::function_wrapper<WrapperArgs...> function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return m_add_wrapped_infix(
+            symbol,
+            std::move(function),
+            precedence,
+            associativity,
+            semantics,
+            typename fw::function_wrapper<WrapperArgs...>::signatures_type{});
+    }
+
+    template <class... WrapperArgs>
+    MathContext& add_infix_operator(
+        std::string_view symbol,
+        fw::move_only_function_wrapper<WrapperArgs...> function,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return m_add_wrapped_infix(
+            symbol,
+            std::move(function),
+            precedence,
+            associativity,
+            semantics,
+            typename fw::move_only_function_wrapper<WrapperArgs...>::signatures_type{});
+    }
+
     template <class... Sigs, class F>
     MathContext& add_infix_operator_overloads(
         std::string_view symbol,
@@ -810,6 +1200,22 @@ public:
         return *this;
     }
 
+    template <class Sig, auto Function, auto PolicyHandler>
+    MathContext& add_infix_operator_with_policy(
+        std::string_view symbol,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return add_infix_operator_with_policy<Sig>(
+            symbol,
+            Function,
+            precedence,
+            PolicyHandler,
+            associativity,
+            semantics);
+    }
+
     template <class F, class PolicyF>
     MathContext& add_infix_operator_with_policy(
         std::string_view symbol,
@@ -826,6 +1232,60 @@ public:
             std::forward<PolicyF>(policy_handler),
             associativity,
             semantics);
+    }
+
+    template <auto Function, auto PolicyHandler>
+    MathContext& add_infix_operator_with_policy(
+        std::string_view symbol,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return add_infix_operator_with_policy<fw::detail::fn_sig_t<decltype(Function)>>(
+            symbol,
+            Function,
+            precedence,
+            PolicyHandler,
+            associativity,
+            semantics);
+    }
+
+    template <class... WrapperArgs, class PolicyHandler>
+    MathContext& add_infix_operator_with_policy(
+        std::string_view symbol,
+        fw::function_wrapper<WrapperArgs...> function,
+        int precedence,
+        PolicyHandler&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return m_add_wrapped_infix_with_policy(
+            symbol,
+            std::move(function),
+            precedence,
+            std::forward<PolicyHandler>(policy_handler),
+            associativity,
+            semantics,
+            typename fw::function_wrapper<WrapperArgs...>::signatures_type{});
+    }
+
+    template <class... WrapperArgs, class PolicyHandler>
+    MathContext& add_infix_operator_with_policy(
+        std::string_view symbol,
+        fw::move_only_function_wrapper<WrapperArgs...> function,
+        int precedence,
+        PolicyHandler&& policy_handler,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return m_add_wrapped_infix_with_policy(
+            symbol,
+            std::move(function),
+            precedence,
+            std::forward<PolicyHandler>(policy_handler),
+            associativity,
+            semantics,
+            typename fw::move_only_function_wrapper<WrapperArgs...>::signatures_type{});
     }
 
     template <class Sig, class... Rest, class F, class PolicyF>
@@ -895,6 +1355,16 @@ public:
             semantics);
     }
 
+    template <class Sig, auto Function, auto PolicyHandler>
+    MathContext& register_infix_operator_with_policy(
+        std::string_view symbol,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return add_infix_operator_with_policy<Sig, Function, PolicyHandler>(symbol, precedence, associativity, semantics);
+    }
+
     template <class F, class PolicyF>
     MathContext& register_infix_operator_with_policy(
         std::string_view symbol,
@@ -911,6 +1381,16 @@ public:
             std::forward<PolicyF>(policy_handler),
             associativity,
             semantics);
+    }
+
+    template <auto Function, auto PolicyHandler>
+    MathContext& register_infix_operator_with_policy(
+        std::string_view symbol,
+        int precedence,
+        Associativity associativity = Associativity::Left,
+        CallableSemantics semantics = {})
+    {
+        return add_infix_operator_with_policy<Function, PolicyHandler>(symbol, precedence, associativity, semantics);
     }
 
     template <class Sig, class F, class PolicyF>
@@ -1007,6 +1487,12 @@ public:
     std::optional<OperatorInfo> inspect_infix_operator(std::string_view symbol) const;
 
 #if STRING_MATH_HAS_CONSTEXPR_EVALUATION
+    template <
+        std::size_t VariableCapacity = 100,
+        std::size_t InfixCapacity = 100,
+        std::size_t FunctionCapacity = 100,
+        std::size_t PrefixCapacity = 100,
+        std::size_t PostfixCapacity = 100>
     static constexpr auto compile_time();
 #endif
 
@@ -1022,10 +1508,51 @@ private:
 
     MathContext& detail_set_value(std::string_view name, MathValue value);
 
+    struct m_erased_invoke_owner_pack
+    {
+        std::shared_ptr<internal::callable_invoke_wrapper> invoke_owner;
+        std::shared_ptr<internal::raw_callable_invoke_wrapper> raw_invoke_owner;
+    };
+
+    struct m_erased_policy_owner_pack
+    {
+        std::shared_ptr<internal::callable_policy_wrapper> policy_owner;
+        std::shared_ptr<internal::raw_callable_policy_wrapper> raw_policy_owner;
+    };
+
+    static auto m_make_erased_invoke_owner(const internal::callable_invoke_wrapper& invoke) -> m_erased_invoke_owner_pack
+    {
+        return {internal::make_invoke_owner(invoke), {}};
+    }
+
+    static auto m_make_erased_invoke_owner(const internal::raw_callable_invoke_wrapper& invoke) -> m_erased_invoke_owner_pack
+    {
+        return {{}, internal::make_raw_invoke_owner(invoke)};
+    }
+
+    static auto m_make_erased_policy_owner(const internal::callable_policy_wrapper& policy_invoke)
+        -> m_erased_policy_owner_pack
+    {
+        return {
+            policy_invoke ? internal::make_policy_owner(policy_invoke)
+                          : std::shared_ptr<internal::callable_policy_wrapper>{},
+            {}};
+    }
+
+    static auto m_make_erased_policy_owner(const internal::raw_callable_policy_wrapper& policy_invoke)
+        -> m_erased_policy_owner_pack
+    {
+        return {
+            {},
+            policy_invoke ? internal::make_raw_policy_owner(policy_invoke)
+                          : std::shared_ptr<internal::raw_callable_policy_wrapper>{}};
+    }
+
     template <class T, class F>
     MathContext& detail_add_typed_variadic_function(
         std::string_view name,
         std::size_t min_arity,
+        std::size_t max_arity,
         F&& function,
         CallableSemantics semantics)
     {
@@ -1034,9 +1561,127 @@ private:
             entry.overloads,
             internal::make_typed_variadic_callable_overload<T>(
                 min_arity,
-                internal::k_unbounded_arity,
+                max_arity,
                 std::forward<F>(function),
                 semantics));
+        return *this;
+    }
+
+    template <class EntryMap, class Wrapper, class... Sigs>
+    MathContext& m_add_wrapped_fixed_overloads(
+        std::string_view name,
+        EntryMap internal::RuntimeContextData::* member,
+        Wrapper&& function,
+        int precedence,
+        Associativity associativity,
+        CallableSemantics semantics,
+        fw::detail::typelist<Sigs...>)
+    {
+        using wrapper_t = std::decay_t<Wrapper>;
+        auto shared_function = std::make_shared<wrapper_t>(std::forward<Wrapper>(function));
+        auto& entry = (m_data.get()->*member)[std::string(name)];
+        entry.precedence = precedence;
+        entry.associativity = associativity;
+        (internal::upsert_overload(
+             entry.overloads,
+             internal::make_fixed_wrapper_overload<Sigs>(shared_function, semantics)),
+         ...);
+        return *this;
+    }
+
+    template <class Wrapper, class... Sigs>
+    MathContext& m_add_wrapped_function(
+        std::string_view name,
+        Wrapper&& function,
+        CallableSemantics semantics,
+        fw::detail::typelist<Sigs...> signatures)
+    {
+        return m_add_wrapped_fixed_overloads(
+            name,
+            &internal::RuntimeContextData::m_functions,
+            std::forward<Wrapper>(function),
+            0,
+            Associativity::Left,
+            semantics,
+            signatures);
+    }
+
+    template <class Wrapper, class... Sigs>
+    MathContext& m_add_wrapped_prefix(
+        std::string_view symbol,
+        Wrapper&& function,
+        int precedence,
+        CallableSemantics semantics,
+        fw::detail::typelist<Sigs...> signatures)
+    {
+        return m_add_wrapped_fixed_overloads(
+            symbol,
+            &internal::RuntimeContextData::m_prefix_operators,
+            std::forward<Wrapper>(function),
+            precedence,
+            Associativity::Left,
+            semantics,
+            signatures);
+    }
+
+    template <class Wrapper, class... Sigs>
+    MathContext& m_add_wrapped_postfix(
+        std::string_view symbol,
+        Wrapper&& function,
+        int precedence,
+        CallableSemantics semantics,
+        fw::detail::typelist<Sigs...> signatures)
+    {
+        return m_add_wrapped_fixed_overloads(
+            symbol,
+            &internal::RuntimeContextData::m_postfix_operators,
+            std::forward<Wrapper>(function),
+            precedence,
+            Associativity::Left,
+            semantics,
+            signatures);
+    }
+
+    template <class Wrapper, class... Sigs>
+    MathContext& m_add_wrapped_infix(
+        std::string_view symbol,
+        Wrapper&& function,
+        int precedence,
+        Associativity associativity,
+        CallableSemantics semantics,
+        fw::detail::typelist<Sigs...> signatures)
+    {
+        return m_add_wrapped_fixed_overloads(
+            symbol,
+            &internal::RuntimeContextData::m_infix_operators,
+            std::forward<Wrapper>(function),
+            precedence,
+            associativity,
+            semantics,
+            signatures);
+    }
+
+    template <class Wrapper, class PolicyHandler, class... Sigs>
+    MathContext& m_add_wrapped_infix_with_policy(
+        std::string_view symbol,
+        Wrapper&& function,
+        int precedence,
+        PolicyHandler&& policy_handler,
+        Associativity associativity,
+        CallableSemantics semantics,
+        fw::detail::typelist<Sigs...>)
+    {
+        using wrapper_t = std::decay_t<Wrapper>;
+        using policy_t = std::decay_t<PolicyHandler>;
+        auto shared_function = std::make_shared<wrapper_t>(std::forward<Wrapper>(function));
+        auto shared_policy = std::make_shared<policy_t>(std::forward<PolicyHandler>(policy_handler));
+        auto& entry = m_data->m_infix_operators[std::string(symbol)];
+        entry.precedence = precedence;
+        entry.associativity = associativity;
+        (internal::upsert_overload(
+             entry.overloads,
+             internal::make_fixed_wrapper_overload_with_policy<Sigs>(shared_function, shared_policy, semantics)),
+         ...);
         return *this;
     }
 

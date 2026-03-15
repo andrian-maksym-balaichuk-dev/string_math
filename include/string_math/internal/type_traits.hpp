@@ -2,7 +2,6 @@
 // Do not include this file directly. Use <string_math/string_math.hpp> or individual public headers.
 
 #include <string_math/internal/config.hpp>
-#include <string_math/value/types.hpp>
 
 #include <tuple>
 #include <type_traits>

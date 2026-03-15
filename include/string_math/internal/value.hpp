@@ -7,11 +7,10 @@
 #include <stdexcept>
 #include <variant>
 
-#include <string_math/internal/config.hpp>
-#include <string_math/internal/type_conversion.hpp>
-#include <string_math/value/policy.hpp>
+#include <../internal/policy.hpp>
 #include <string_math/diagnostics/result.hpp>
-#include <string_math/value/traits.hpp>
+#include <string_math/internal/config.hpp>
+#include <string_math/value/types.hpp>
 
 namespace string_math
 {

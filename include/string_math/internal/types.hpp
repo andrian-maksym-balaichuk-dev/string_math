@@ -1,14 +1,40 @@
 #pragma once
-// Do not include this file directly. Use <string_math/string_math.hpp> or individual public headers.
 
-#include <string_math/value/types.hpp>
+#include <string_math/internal/config.hpp>
 #include <string_math/internal/type_traits.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <type_traits>
 #include <utility>
+
+namespace string_math
+{
+
+enum class ValueType
+{
+    Short,
+    UnsignedShort,
+    Int,
+    UnsignedInt,
+    Long,
+    UnsignedLong,
+    LongLong,
+    UnsignedLongLong,
+    Float,
+    Double,
+    LongDouble
+};
+
+enum class Associativity
+{
+    Left,
+    Right
+};
+
+} // namespace string_math
 
 namespace string_math::internal
 {
@@ -410,3 +436,34 @@ constexpr ValueType preferred_binary_target(ValueType left, ValueType right) noe
 }
 
 } // namespace string_math::internal
+
+namespace string_math
+{
+
+template <class T, class Enable = void>
+struct ValueTraits
+{
+    static constexpr bool supported = false;
+};
+
+template <class T>
+struct ValueTraits<T, std::enable_if_t<internal::is_supported_value_type_v<T>>>
+{
+    static constexpr bool supported = true;
+    using value_type = internal::canonical_storage_type_t<T>;
+
+    static constexpr value_type to_storage(T value)
+    {
+        return static_cast<value_type>(value);
+    }
+
+    static constexpr T from_storage(value_type value)
+    {
+        return static_cast<T>(value);
+    }
+};
+
+template <class T>
+inline constexpr bool has_value_traits_v = ValueTraits<internal::remove_cvref_t<T>>::supported;
+
+} // namespace string_math

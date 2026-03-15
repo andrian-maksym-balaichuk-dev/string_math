@@ -60,6 +60,13 @@ if(BUILD_TESTING AND STRING_MATH_BUILD_TESTS)
                 CXX_STANDARD_REQUIRED ON
                 CXX_EXTENSIONS OFF
         )
+        if(target_name MATCHES "^string_math_constexpr_")
+            if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+                target_compile_options(${target_name} PRIVATE -fconstexpr-steps=10000000)
+            elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+                target_compile_options(${target_name} PRIVATE -fconstexpr-ops-limit=100000000)
+            endif()
+        endif()
         add_test(NAME ${target_name} COMMAND ${target_name})
     endfunction()
 

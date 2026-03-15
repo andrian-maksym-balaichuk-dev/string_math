@@ -1,7 +1,9 @@
 #pragma once
 // Do not include this file directly. Use <string_math/string_math.hpp> or individual public headers.
 
+#include <fw/function_ref.hpp>
 #include <fw/function_wrapper.hpp>
+#include <fw/move_only_function_wrapper.hpp>
 
 #if defined(_MSVC_LANG)
 #define STRING_MATH_CXX_STANDARD _MSVC_LANG
