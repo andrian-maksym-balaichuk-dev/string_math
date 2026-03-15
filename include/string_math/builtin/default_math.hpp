@@ -9,10 +9,10 @@
 #include <utility>
 #include <vector>
 
-#include <string_math/context/context.hpp>
-#include <string_math/context/static_context.hpp>
-#include <string_math/expression/expression.hpp>
-#include <string_math/internal/arithmetic.hpp>
+#include <string_math/internal/context/context.hpp>
+#include <string_math/internal/context/static_context.hpp>
+#include <string_math/internal/expression/expression.hpp>
+#include <string_math/internal/support/arithmetic.hpp>
 
 namespace string_math::builtin::default_math
 {

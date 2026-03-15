@@ -1,6 +1,6 @@
 #pragma once
 
-#include <string_math/expression/operation.hpp>
+#include <string_math/internal/expression/operation.hpp>
 
 namespace string_math
 {

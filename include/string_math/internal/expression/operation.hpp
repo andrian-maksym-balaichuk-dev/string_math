@@ -5,9 +5,9 @@
 #include <set>
 #include <unordered_map>
 
-#include <string_math/context/context.hpp>
-#include <string_math/internal/parser.hpp>
-#include <string_math/internal/overload_impl.hpp>
+#include <string_math/internal/context/context.hpp>
+#include <string_math/internal/parser/parser.hpp>
+#include <string_math/internal/callable/callable.hpp>
 
 namespace string_math
 {

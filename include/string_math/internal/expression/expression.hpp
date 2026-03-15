@@ -3,9 +3,9 @@
 #include <type_traits>
 
 #include <string_math/calculator.hpp>
-#include <string_math/context/static_context.hpp>
-#include <string_math/internal/constexpr_parser.hpp>
-#include <string_math/expression/operation.hpp>
+#include <string_math/internal/context/static_context.hpp>
+#include <string_math/internal/parser/parser.hpp>
+#include <string_math/internal/expression/operation.hpp>
 
 namespace string_math
 {

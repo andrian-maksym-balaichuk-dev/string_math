@@ -8,9 +8,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include <string_math/callable.hpp>
-#include <string_math/internal/config.hpp>
-#include <string_math/internal/overload_impl.hpp>
+#include <string_math/internal/callable/callable.hpp>
+#include <string_math/internal/support/config.hpp>
+#include <string_math/internal/callable/callable.hpp>
 
 namespace string_math::internal
 {

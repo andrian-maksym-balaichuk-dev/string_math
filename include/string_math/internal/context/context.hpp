@@ -6,10 +6,10 @@
 #include <string_view>
 #include <vector>
 
-#include <../internal/callable.hpp>
-#include <../internal/value.hpp>
-#include <string_math/internal/context_data.hpp>
-#include <string_math/internal/parser.hpp>
+#include <string_math/internal/callable/callable.hpp>
+#include <string_math/internal/value/value.hpp>
+#include <string_math/internal/context/context_data.hpp>
+#include <string_math/internal/parser/parser.hpp>
 
 namespace string_math
 {

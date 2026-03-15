@@ -4,9 +4,9 @@
 #include <string_view>
 #include <vector>
 
-#include <string_math/context/context.hpp>
-#include <string_math/internal/context_data.hpp>
-#include <string_math/internal/overload_impl.hpp>
+#include <string_math/internal/context/context.hpp>
+#include <string_math/internal/context/context_data.hpp>
+#include <string_math/internal/callable/callable.hpp>
 
 namespace string_math::internal
 {

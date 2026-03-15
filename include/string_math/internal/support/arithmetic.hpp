@@ -5,8 +5,8 @@
 #include <limits>
 #include <stdexcept>
 
-#include <string_math/value/value.hpp>
-#include <string_math/value/policy.hpp>
+#include <string_math/internal/value/value.hpp>
+#include <string_math/internal/value/value.hpp>
 
 namespace string_math::internal
 {
