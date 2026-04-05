@@ -1,6 +1,7 @@
 #include <string_math/builtin/default_math.hpp>
 #include <string_math/string_math.hpp>
 
+#include <span>
 #include <type_traits>
 
 using string_math::evaluate;
@@ -49,7 +50,7 @@ constexpr int sum6(int a, int b, int c, int d, int e, int f)
     return a + b + c + d + e + f;
 }
 
-constexpr int typed_variadic_sum(const std::vector<int>& arguments)
+constexpr int typed_variadic_sum(std::span<const int> arguments)
 {
     int total = 0;
     for (const int argument : arguments)
@@ -242,6 +243,56 @@ static_assert(evaluate("2 plus_lambda 3", lambda_context).get<int>() == 7, "cons
 constexpr auto small_capacity_context = string_math::MathContext::compile_time<1, 1, 1, 1, 1>()
                                             .add_function("id", [](int value) { return value; });
 static_assert(evaluate("id(3)", small_capacity_context).get<int>() == 3, "custom constexpr capacity should still evaluate");
+
+// ---------------------------------------------------------------------------
+// evaluate_consteval — forces compile-time evaluation (not merely allowed).
+// ---------------------------------------------------------------------------
+using string_math::evaluate_consteval;
+
+static_assert(evaluate_consteval("(1 + 2) * 3", builtin_context).get<int>() == 9,
+    "evaluate_consteval: basic arithmetic with context");
+static_assert(evaluate_consteval("square(5)", custom_function_context).get<int>() == 25,
+    "evaluate_consteval: custom function");
+static_assert(evaluate_consteval("2 plus1 3", custom_infix_context).get<int>() == 6,
+    "evaluate_consteval: custom infix operator");
+static_assert(evaluate_consteval("dbl 4", custom_prefix_context).get<int>() == 8,
+    "evaluate_consteval: custom prefix operator");
+static_assert(evaluate_consteval("4++", custom_postfix_context).get<int>() == 5,
+    "evaluate_consteval: custom postfix operator");
+static_assert(evaluate_consteval("answer()", fixed_arity_context).get<int>() == 42,
+    "evaluate_consteval: zero-arity function");
+static_assert(evaluate_consteval("sum3(1, 2, 3)", fixed_arity_context).get<int>() == 6,
+    "evaluate_consteval: 3-argument function");
+static_assert(evaluate_consteval("sumraw(1, 2, 3)", parity_context).get<int>() == 6,
+    "evaluate_consteval: raw variadic function");
+static_assert(evaluate_consteval("sumv(1, 2, 3, 4)", parity_context).get<int>() == 10,
+    "evaluate_consteval: typed variadic function (span-based)");
+
+// ---------------------------------------------------------------------------
+// ConstexprCalculator — unified compile-time/runtime calculator interface
+// ---------------------------------------------------------------------------
+constexpr int square_fn(int x) { return x * x; }
+constexpr int add_one(int left, int right) { return left + right + 1; }
+constexpr int add_val(int left, int right) { return left + right; }
+
+// Build from the builtin context so standard operators (+, -, etc.) are available.
+constexpr auto smart_calc = string_math::ConstexprCalculatorBase(
+        string_math::builtin::default_math_compile_time_context())
+    .add_function<square_fn>("sq")
+    .add_infix_operator<add_one>("p1", k_additive)
+    .set_value("K", 7);
+
+// Compile-time evaluation via constexpr context:
+static_assert(smart_calc.evaluate("sq(5)").get<int>() == 25,
+    "ConstexprCalculator: function at compile time");
+static_assert(smart_calc.evaluate("2 p1 3").get<int>() == 6,
+    "ConstexprCalculator: infix operator at compile time");
+static_assert(smart_calc.evaluate("{K} + 1").get<int>() == 8,
+    "ConstexprCalculator: variable + builtin operator at compile time");
+
+// Forced compile-time via evaluate_consteval:
+static_assert(smart_calc.evaluate_consteval("sq(4)").get<int>() == 16,
+    "ConstexprCalculator: evaluate_consteval");
 #endif
 
 int main()

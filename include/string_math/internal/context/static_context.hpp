@@ -7,6 +7,7 @@
 #include <string_math/internal/context/context.hpp>
 #include <string_math/internal/context/context_data.hpp>
 #include <string_math/internal/callable/callable.hpp>
+#include <string_math/internal/support/fixed_vector.hpp>
 
 namespace string_math::internal
 {
@@ -959,6 +960,33 @@ public:
         return m_collect(name, m_data.m_functions, m_data.m_function_count);
     }
 
+    // Constexpr-native lookups: return FixedVector to avoid transient heap allocation.
+    // These bypass CollectedCallable's std::vector and are suitable for consteval contexts.
+
+    constexpr FixedVector<CallableOverloadView, k_max_overloads_per_symbol>
+        lookup_constexpr_function(std::string_view name) const
+    {
+        return m_collect_fixed(name, m_data.m_functions, m_data.m_function_count);
+    }
+
+    constexpr FixedVector<CallableOverloadView, k_max_overloads_per_symbol>
+        lookup_constexpr_infix(std::string_view symbol) const
+    {
+        return m_collect_fixed(symbol, m_data.m_infix_operators, m_data.m_infix_operator_count);
+    }
+
+    constexpr FixedVector<CallableOverloadView, k_max_overloads_per_symbol>
+        lookup_constexpr_prefix(std::string_view symbol) const
+    {
+        return m_collect_fixed(symbol, m_data.m_prefix_operators, m_data.m_prefix_operator_count);
+    }
+
+    constexpr FixedVector<CallableOverloadView, k_max_overloads_per_symbol>
+        lookup_constexpr_postfix(std::string_view symbol) const
+    {
+        return m_collect_fixed(symbol, m_data.m_postfix_operators, m_data.m_postfix_operator_count);
+    }
+
     constexpr const EvaluationPolicy& policy() const noexcept
     {
         return m_data.m_policy;
@@ -1041,19 +1069,43 @@ private:
     template <auto Function>
     static constexpr MathValue m_invoke_variadic(MathArgsView arguments)
     {
-        return Function(std::vector<MathValue>(arguments.begin(), arguments.end()));
+        if consteval
+        {
+            FixedVector<MathValue, k_max_constexpr_args> args;
+            for (std::size_t index = 0; index < arguments.size(); ++index)
+            {
+                args.push_back(arguments[index]);
+            }
+            return Function(args.as_span());
+        }
+        else
+        {
+            return Function(std::vector<MathValue>(arguments.begin(), arguments.end()));
+        }
     }
 
     template <class T, auto Function>
     static constexpr MathValue m_invoke_typed_variadic(MathArgsView arguments)
     {
-        std::vector<T> converted;
-        converted.reserve(arguments.size());
-        for (std::size_t index = 0; index < arguments.size(); ++index)
+        if consteval
         {
-            converted.push_back(arguments[index].template cast<T>());
+            FixedVector<T, k_max_constexpr_args> converted;
+            for (std::size_t index = 0; index < arguments.size(); ++index)
+            {
+                converted.push_back(arguments[index].template cast<T>());
+            }
+            return MathValue(Function(converted.as_span()));
         }
-        return MathValue(Function(converted));
+        else
+        {
+            std::vector<T> converted;
+            converted.reserve(arguments.size());
+            for (std::size_t index = 0; index < arguments.size(); ++index)
+            {
+                converted.push_back(arguments[index].template cast<T>());
+            }
+            return MathValue(Function(converted));
+        }
     }
 
     template <class Sig, auto PolicyHandler>
@@ -1272,6 +1324,20 @@ private:
             collected.overloads.push_back(entries[index].overload);
         }
         return collected;
+    }
+
+    static constexpr FixedVector<CallableOverloadView, k_max_overloads_per_symbol>
+        m_collect_fixed(std::string_view name, const auto& entries, std::size_t count)
+    {
+        FixedVector<CallableOverloadView, k_max_overloads_per_symbol> result;
+        for (std::size_t index = 0; index < count; ++index)
+        {
+            if (entries[index].name_or_symbol == name)
+            {
+                result.push_back(entries[index].overload);
+            }
+        }
+        return result;
     }
 
     StaticContextData<VariableCapacity, InfixCapacity, FunctionCapacity, PrefixCapacity, PostfixCapacity> m_data{};

@@ -13,6 +13,7 @@
 #include <type_traits>
 
 #include <string_math/internal/support/config.hpp>
+#include <string_math/internal/support/fixed_vector.hpp>
 #include <string_math/internal/value/value.hpp>
 #include <string_math/internal/context/context_data.hpp>
 #include <string_math/internal/error/error.hpp>
@@ -843,7 +844,7 @@ private:
     constexpr MathValue m_parse_function_call(std::string_view name)
     {
         ++m_position;
-        std::vector<MathValue> arguments;
+        FixedVector<MathValue, k_max_constexpr_args> arguments;
         m_skip_spaces();
         if (m_position < m_expression.size() && m_expression[m_position] != ')')
         {
@@ -1153,19 +1154,40 @@ private:
     constexpr MathValue m_apply_infix(std::string_view symbol, const MathValue& left, const MathValue& right)
     {
         const std::array<MathValue, 2> arguments{left, right};
-        return m_apply_binary_callable(symbol, m_context->lookup_infix_operator(symbol), arguments);
+        if constexpr (!std::is_same_v<Context, void> && Context::is_constexpr_context)
+        {
+            return m_apply_constexpr_fixed_callable(symbol, m_context->lookup_constexpr_infix(symbol), arguments);
+        }
+        else
+        {
+            return m_apply_binary_callable(symbol, m_context->lookup_infix_operator(symbol), arguments);
+        }
     }
 
     constexpr MathValue m_apply_prefix(std::string_view symbol, const MathValue& value)
     {
         const std::array<MathValue, 1> arguments{value};
-        return m_apply_unary_callable(symbol, m_context->lookup_prefix_operator(symbol), arguments);
+        if constexpr (!std::is_same_v<Context, void> && Context::is_constexpr_context)
+        {
+            return m_apply_constexpr_fixed_callable(symbol, m_context->lookup_constexpr_prefix(symbol), arguments);
+        }
+        else
+        {
+            return m_apply_unary_callable(symbol, m_context->lookup_prefix_operator(symbol), arguments);
+        }
     }
 
     constexpr MathValue m_apply_postfix(std::string_view symbol, const MathValue& value)
     {
         const std::array<MathValue, 1> arguments{value};
-        return m_apply_unary_callable(symbol, m_context->lookup_postfix_operator(symbol), arguments);
+        if constexpr (!std::is_same_v<Context, void> && Context::is_constexpr_context)
+        {
+            return m_apply_constexpr_fixed_callable(symbol, m_context->lookup_constexpr_postfix(symbol), arguments);
+        }
+        else
+        {
+            return m_apply_unary_callable(symbol, m_context->lookup_postfix_operator(symbol), arguments);
+        }
     }
 
     constexpr MathValue m_apply_function(std::string_view name, const MathValue* arguments, std::size_t count)
@@ -1184,30 +1206,96 @@ private:
                 throw std::invalid_argument("string_math: unsupported constexpr function");
             }
 
-            const auto callable = m_context->lookup_function(name);
-            if (!callable)
-            {
-                throw std::invalid_argument("string_math: unsupported constexpr function");
-            }
-
-            std::vector<ValueType> argument_types;
-            argument_types.reserve(count);
+            FixedVector<ValueType, k_max_constexpr_args> argument_types;
             for (std::size_t index = 0; index < count; ++index)
             {
                 argument_types.push_back(arguments[index].type());
             }
 
-            const OverloadResolutionMatch match = resolve_overload_match(callable.overloads, argument_types, m_context->policy().promotion);
+            if constexpr (Context::is_constexpr_context)
+            {
+                const auto overloads = m_context->lookup_constexpr_function(name);
+                if (!overloads)
+                {
+                    throw std::invalid_argument("string_math: unsupported constexpr function");
+                }
+
+                const OverloadResolutionMatch match =
+                    resolve_overload_match(overloads.as_span(), argument_types.as_span(), m_context->policy().promotion);
+                if (match.overload == nullptr)
+                {
+                    throw std::invalid_argument("string_math: no matching overload for constexpr function");
+                }
+                if (match.ambiguous)
+                {
+                    throw std::invalid_argument("string_math: ambiguous constexpr function overload");
+                }
+
+                return invoke_constexpr_overload(*match.overload, arguments, count, m_context->policy(), name);
+            }
+            else
+            {
+                const auto callable = m_context->lookup_function(name);
+                if (!callable)
+                {
+                    throw std::invalid_argument("string_math: unsupported constexpr function");
+                }
+
+                const OverloadResolutionMatch match =
+                    resolve_overload_match(callable.overloads, argument_types.as_span(), m_context->policy().promotion);
+                if (match.overload == nullptr)
+                {
+                    throw std::invalid_argument("string_math: no matching overload for constexpr function");
+                }
+                if (match.ambiguous)
+                {
+                    throw std::invalid_argument("string_math: ambiguous constexpr function overload");
+                }
+
+                return invoke_constexpr_overload(*match.overload, arguments, count, m_context->policy(), name);
+            }
+        }
+    }
+
+    // Constexpr-native fixed-arity operator dispatch — uses FixedVector instead of CollectedCallable.
+    template <std::size_t N, std::size_t Arity>
+    constexpr MathValue m_apply_constexpr_fixed_callable(
+        std::string_view symbol,
+        const FixedVector<CallableOverloadView, N>& overloads,
+        const std::array<MathValue, Arity>& arguments)
+    {
+        if constexpr (std::is_same_v<Context, void>)
+        {
+            (void)symbol;
+            (void)overloads;
+            (void)arguments;
+            throw std::invalid_argument("string_math: unsupported constexpr operator");
+        }
+        else
+        {
+            if (m_context == nullptr || !overloads)
+            {
+                throw std::invalid_argument("string_math: unsupported constexpr operator");
+            }
+
+            std::array<ValueType, Arity> argument_types{};
+            for (std::size_t index = 0; index < Arity; ++index)
+            {
+                argument_types[index] = arguments[index].type();
+            }
+
+            const OverloadResolutionMatch match =
+                resolve_overload_match(overloads.as_span(), argument_types, m_context->policy().promotion);
             if (match.overload == nullptr)
             {
-                throw std::invalid_argument("string_math: no matching overload for constexpr function");
+                throw std::invalid_argument("string_math: no matching overload for constexpr operator");
             }
             if (match.ambiguous)
             {
-                throw std::invalid_argument("string_math: ambiguous constexpr function overload");
+                throw std::invalid_argument("string_math: ambiguous constexpr operator overload");
             }
 
-            return invoke_constexpr_overload(*match.overload, arguments, count, m_context->policy(), name);
+            return invoke_constexpr_overload(*match.overload, arguments.data(), Arity, m_context->policy(), symbol);
         }
     }
 
